@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environments
+.venv/
+venv/
+env/
+
+# Generated experiment artifacts
+features/
+features_all/
+checkpoints/
+evaluation_results/
+artifacts/features/*
+artifacts/checkpoints/*
+artifacts/results/*
+artifacts/logs/*
+artifacts/csv/*
+*.npy
+*.npz
+*.pt
+*.pth
+*.ckpt
+
+# Keep artifact directory placeholders
+!artifacts/features/.gitkeep
+!artifacts/checkpoints/.gitkeep
+!artifacts/results/.gitkeep
+!artifacts/logs/.gitkeep
+!artifacts/csv/.gitkeep

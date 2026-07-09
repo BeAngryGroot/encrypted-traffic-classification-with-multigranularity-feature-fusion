@@ -16,8 +16,8 @@ class ModelConfig:
         # =====================================================
         # === 输入维度（来自 features_test.py） ===
         # =====================================================
-        self.micro_d_in = 20        # 每个包的微观特征维度
-        self.macro_d_in = 20        # 每个流的宏观特征维度
+        self.micro_d_in = 16        # packet_seq 每个包 token 的特征维度
+        self.macro_d_in = 12        # burst_seq 每个突发段 token 的特征维度
 
         # =====================================================
         # === Micro 分支（Mamba 序列建模） ===
@@ -38,6 +38,8 @@ class ModelConfig:
         # === 融合层 (Gated Fusion) ===
         # =====================================================
         self.fusion_hidden = 192    # 融合后隐藏层维度，用于整合 micro/macro 输出
+        self.fusion_mode = "gated"  # gated / concat / fixed / micro_only / burst_only
+        self.fixed_fusion_weight = 0.5
 
         # =====================================================
         # === 分类相关 ===
@@ -60,11 +62,9 @@ class DataConfig:
     def __init__(self):
         # === 微观特征 ===
         self.max_seq_len = 64       # 包序列长度
-        self.feature_dim_micro = 20 # 每个包特征维度
+        self.max_burst_len = 32     # 突发段序列长度
+        self.feature_dim_micro = 16 # 每个包特征维度
 
         # === 宏观特征 ===
-        self.feature_dim_macro = 20 # 每个流宏观特征维度
-
-        # === 可选：宏观时间分段数（用于多token宏观特征） ===
-        self.macro_split_K = 5      # 如果要拆成多时段特征时使用，如 [B,5,4]
-
+        self.feature_dim_macro = 12 # 每个突发段 token 特征维度
+        self.alpha = 1.0            # 自适应同向突发段阈值系数

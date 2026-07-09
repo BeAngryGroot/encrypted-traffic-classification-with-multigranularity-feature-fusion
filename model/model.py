@@ -39,7 +39,7 @@ class DualBranchFlowClassifier(nn.Module):
     """
     输入:
       micro_seq : [B, T, D_micro]    micro_mask : [B, T]   (1=有效, 0=pad)
-      macro_bag : [B, D_macro]       macro_mask : [B, 1]   (1=有效, 0=pad)
+      macro_bag : [B, K, D_macro]    macro_mask : [B, K]   (1=有效, 0=pad)
     输出:
       融合特征向量 [B, fusion_hidden]
     """
@@ -66,7 +66,9 @@ class DualBranchFlowClassifier(nn.Module):
         self.fusion = GatedFusion(
             d_micro=cfg.micro_d_model,
             d_macro=cfg.macro_d_model,
-            d_hidden=cfg.fusion_hidden
+            d_hidden=cfg.fusion_hidden,
+            mode=getattr(cfg, "fusion_mode", "gated"),
+            fixed_weight=getattr(cfg, "fixed_fusion_weight", 0.5),
         )
 
     @staticmethod
