@@ -1,4 +1,19 @@
-numpy
-pandas
-torch
-pytest
+# 核心数值与数据处理
+numpy>=1.26,<3.0
+pandas>=2.2,<3.1
+scikit-learn>=1.4,<1.8
+scipy>=1.11,<1.16
+
+# 深度学习与正式 Mamba 运行环境
+torch>=2.2,<2.8
+# mamba-ssm 请按服务器 CUDA/PyTorch 版本单独安装，避免 pip 误装不兼容 wheel。
+
+# PCAP、配置和实验分析
+scapy>=2.5,<2.7
+PyYAML>=6.0,<7.0
+matplotlib>=3.8,<3.11
+seaborn>=0.13,<0.14
+tqdm>=4.66,<5.0
+
+# 测试
+pytest>=8.0,<10.0

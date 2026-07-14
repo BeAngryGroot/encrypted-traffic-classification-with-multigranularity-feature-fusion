@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.idea/
 
 # Local environments
 .venv/
@@ -20,6 +21,9 @@ artifacts/checkpoints/*
 artifacts/results/*
 artifacts/logs/*
 artifacts/csv/*
+artifacts/runs/*
+sampling_manifest.csv
+sample_manifest.csv
 *.npy
 *.npz
 *.pt
@@ -32,3 +36,4 @@ artifacts/csv/*
 !artifacts/results/.gitkeep
 !artifacts/logs/.gitkeep
 !artifacts/csv/.gitkeep
+!artifacts/runs/.gitkeep
