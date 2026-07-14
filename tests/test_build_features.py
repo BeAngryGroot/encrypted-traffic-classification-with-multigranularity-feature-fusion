@@ -79,3 +79,7 @@ def test_build_features_from_csv_dir_writes_new_feature_schema(tmp_path):
         mappings = pickle.load(f)
     assert mappings["combined"]["id_to_label"][0] == "VPN:AUDIO"
     assert np.load(out_dir / "sample_keys.npy", allow_pickle=True).tolist() == ["VPN_AUDIO:flow-a"]
+    assert np.load(out_dir / "group_ids.npy", allow_pickle=True).tolist() == ["VPN_AUDIO_packets.csv"]
+    manifest = pd.read_csv(out_dir / "sample_manifest.csv")
+    assert manifest.loc[0, "sample_key"] == "VPN_AUDIO:flow-a"
+    assert manifest.loc[0, "capture_group"] == "VPN_AUDIO_packets.csv"

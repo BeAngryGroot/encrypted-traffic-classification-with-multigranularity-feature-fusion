@@ -90,6 +90,7 @@ def build_features_from_csv_dir(
     max_bursts: int = 32,
     alpha: float = 1.0,
     fixed_threshold: float | None = None,
+    source_manifest: str | Path | None = None,
 ) -> dict[str, Any]:
     csv_dir = Path(csv_dir)
     output_dir = Path(output_dir)
@@ -103,6 +104,15 @@ def build_features_from_csv_dir(
     primary_labels: list[str] = []
     secondary_labels: list[str] = []
     combined_labels: list[str] = []
+    group_ids: list[str] = []
+    manifest_rows: list[dict[str, str]] = []
+
+    source_overrides: dict[str, dict[str, Any]] = {}
+    if source_manifest is not None:
+        manifest_df = pd.read_csv(source_manifest)
+        if "source_key" not in manifest_df.columns:
+            raise ValueError("source_manifest must contain source_key")
+        source_overrides = {str(row["source_key"]).replace("\\", "/"): row.to_dict() for _, row in manifest_df.iterrows()}
 
     packet_csvs = _packet_csvs(csv_dir)
     if not packet_csvs:
@@ -112,10 +122,13 @@ def build_features_from_csv_dir(
         df = pd.read_csv(packet_csv)
         if "flow_id" not in df.columns:
             raise ValueError(f"{packet_csv} missing required column: flow_id")
+        relative_source = str(packet_csv.relative_to(csv_dir)).replace("\\", "/")
+        override = source_overrides.get(relative_source, source_overrides.get(packet_csv.name, {}))
         label_info = infer_labels(packet_csv)
-        primary = label_info.primary
-        secondary = label_info.application
-        combined = label_info.combined
+        primary = str(override.get("primary", label_info.primary))
+        secondary = str(override.get("application", label_info.application))
+        combined = f"{primary}:{secondary}"
+        capture_group = str(override.get("capture_group", relative_source))
         source_name = packet_csv.stem.removesuffix("_packets")
 
         for flow_id, group in df.groupby("flow_id", sort=False):
@@ -137,6 +150,15 @@ def build_features_from_csv_dir(
             primary_labels.append(primary)
             secondary_labels.append(secondary)
             combined_labels.append(combined)
+            group_ids.append(capture_group)
+            manifest_rows.append({
+                "sample_key": sample_keys[-1],
+                "source_key": relative_source,
+                "capture_group": capture_group,
+                "primary": primary,
+                "application": secondary,
+                "combined": combined,
+            })
 
     if not packet_arrays:
         raise ValueError(f"No flow samples built from {csv_dir}")
@@ -166,6 +188,8 @@ def build_features_from_csv_dir(
     np.save(output_dir / "combined_labels.npy", combined_ids)
     np.save(output_dir / "labels.npy", combined_ids)
     np.save(output_dir / "sample_keys.npy", np.asarray(sample_keys, dtype=str))
+    np.save(output_dir / "group_ids.npy", np.asarray(group_ids, dtype=str))
+    pd.DataFrame(manifest_rows).to_csv(output_dir / "sample_manifest.csv", index=False)
     with (output_dir / "label_mappings.pkl").open("wb") as f:
         pickle.dump(mappings, f)
 
@@ -200,6 +224,7 @@ def main() -> None:
     parser.add_argument("--max_bursts", type=int, default=32)
     parser.add_argument("--alpha", type=float, default=1.0)
     parser.add_argument("--fixed_threshold", type=float, default=None)
+    parser.add_argument("--source_manifest", default=None)
     args = parser.parse_args()
 
     summary = build_features_from_csv_dir(
@@ -209,6 +234,7 @@ def main() -> None:
         max_bursts=args.max_bursts,
         alpha=args.alpha,
         fixed_threshold=args.fixed_threshold,
+        source_manifest=args.source_manifest,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
