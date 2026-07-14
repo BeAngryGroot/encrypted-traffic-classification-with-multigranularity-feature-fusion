@@ -1,0 +1,23 @@
+experiment_id: E10_application8_gated_v1
+task: application8
+fusion: gated
+loss: focal
+seed: 42
+feature_id: iscxtor_full_p64_b32_a1_v1
+split_id: application8_group_seed42_v1
+features_dir: artifacts/features/iscxtor_full_p64_b32_a1_v1
+split_file: artifacts/splits/application8_group_seed42_v1.npz
+epochs: 80
+batch_size: 64
+learning_rate: 0.0002
+val_ratio: 0.15
+test_ratio: 0.15
+micro_d_model: 384
+micro_layers: 4
+d_state: 128
+macro_d_model: 96
+macro_layers: 3
+macro_heads: 6
+fusion_hidden: 192
+require_official_mamba: true
+

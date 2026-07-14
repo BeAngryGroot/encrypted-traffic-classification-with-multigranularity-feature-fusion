@@ -1,0 +1,23 @@
+experiment_id: E00_application8_smoke_v1
+task: application8
+fusion: gated
+loss: focal
+seed: 42
+feature_id: iscxtor_smoke_p32_b16_v1
+split_id: application8_smoke_group_seed42_v1
+features_dir: artifacts/features/iscxtor_smoke_p32_b16_v1
+split_file: artifacts/splits/application8_smoke_group_seed42_v1.npz
+epochs: 2
+batch_size: 16
+learning_rate: 0.0002
+val_ratio: 0.15
+test_ratio: 0.15
+micro_d_model: 64
+micro_layers: 1
+d_state: 64
+macro_d_model: 64
+macro_layers: 1
+macro_heads: 4
+fusion_hidden: 128
+require_official_mamba: false
+

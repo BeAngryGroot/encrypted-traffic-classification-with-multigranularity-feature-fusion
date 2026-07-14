@@ -1,93 +1,46 @@
-# Encrypted Traffic Classification With Multi-Granularity Feature Fusion
+# 基于多粒度特征融合的加密流量分类
 
-论文方向：**基于多粒度特征融合的加密流量分类方法**。
+本项目面向 ISCXTor2016：以八类应用细粒度分类为主任务，以 Tor/Non-Tor 二分类为辅助任务。模型主干保持为包级 Mamba、burst 级 Transformer 与门控融合。
 
-本项目将原始 `pcap/pcapng` 流量转换为两类可训练输入：
+## 任务定义
 
-- `packet_seq`: 突发段感知包级序列，供 Mamba 微观分支使用。
-- `burst_seq`: 自适应同向突发段序列，供 Transformer 段级分支使用。
+- 主任务 `application8`：Browsing、Email、Chat、Audio、Video、File、VoIP、P2P。
+- 辅助任务 `tor_binary`：Non-Tor、Tor。
+- 主任务跨 Tor/Non-Tor 识别应用类别；未知标签不会作为第九类参与训练。
 
-模型主线为：
+## 数据与模型链路
 
 ```text
 pcap/pcapng
--> packet CSV / flow CSV
--> adaptive same-direction burst segmentation
--> packet_seq + burst_seq
--> Mamba branch + Transformer branch
--> gated fusion
--> classifier
+  -> 五元组会话化 packet/flow CSV
+  -> 同一个 max_packets 观察前缀
+  -> packet_seq + 自适应同向 burst_seq
+  -> Mamba2 + burst Transformer
+  -> gated fusion
+  -> application8 / tor_binary
 ```
 
-## Directory Layout
+自适应 burst 阈值为：`T_flow = median(IAT) + alpha * IQR(IAT)`。正式实验必须使用 `mamba_ssm.Mamba2`；轻量 SSM 回退只用于 smoke 跑通，不得报告为论文结果。
 
-```text
-data/                  pcap 解析、突发段划分、特征张量生成
-model/                 Mamba 分支、Transformer 分支、融合层、训练与评估脚本
-experiments/configs/   主实验和消融实验配置示例
-artifacts/features/    生成的 .npy 特征文件，Git 忽略
-artifacts/checkpoints/ 训练得到的模型权重，Git 忽略
-artifacts/results/     评估结果、预测结果、指标文件，Git 忽略
-docs/                  实验协议和项目整理说明
-tests/                 小型回归测试
-```
+## 三阶段运行
 
-旧的 `features/`、`features_all/`、`checkpoints/`、`evaluation_results/` 已从仓库中清理。后续实验产物统一放入 `artifacts/`。
+1. smoke：每个源文件少量完整 flow，验证 PCAP、标签、特征、模型张量和保存链路。
+2. pilot：每类适量完整 flow，确定显存、batch size、训练时间和参数范围。
+3. full：完整数据一次生成 CSV/特征缓存，冻结 group split 后运行主实验、辅助实验和消融。
 
-## Main Workflow
+完整命令、数据清单、版本命名和服务器执行顺序见 [实验协议](docs/experiment_protocol.md)。
 
-1. Convert pcap files to packet CSV files:
+快速检查配置但不启动训练：
 
 ```powershell
-python data/pcap_to_csv.py --input_dir <pcap_dir> --output_dir artifacts/csv
+python experiments/run_experiment.py --config experiments/configs/smoke/application8_smoke_v1.yaml --dry-run
 ```
 
-2. Build packet and burst feature tensors:
+运行 smoke：
 
 ```powershell
-python data/build_features.py --csv_dir artifacts/csv --output_dir artifacts/features --max_packets 64 --max_bursts 32 --alpha 1.0
+python experiments/run_experiment.py --config experiments/configs/smoke/application8_smoke_v1.yaml
 ```
 
-3. Train the full model:
+每次实验写入 `artifacts/runs/<experiment_id>/seed_<seed>/`，已有目录默认拒绝覆盖。生成数据、特征、权重和运行结果均由 Git 忽略，配置与代码进入版本控制。
 
-```powershell
-python model/train_optimized.py --features_dir artifacts/features --checkpoints_dir artifacts/checkpoints --classification_mode combined --fusion_mode gated
-```
-
-4. Evaluate a checkpoint:
-
-```powershell
-python model/export_results.py --checkpoint artifacts/checkpoints/best_combined_gated.pt --features_dir artifacts/features --output_dir artifacts/results
-```
-
-## Generated Feature Schema
-
-`data/build_features.py` writes:
-
-- `packet_seq.npy`: `[N, max_packets, packet_feature_dim]`
-- `packet_mask.npy`: `[N, max_packets]`
-- `burst_seq.npy`: `[N, max_bursts, burst_feature_dim]`
-- `burst_mask.npy`: `[N, max_bursts]`
-- `primary_labels.npy`
-- `secondary_labels.npy`
-- `combined_labels.npy`
-- `label_mappings.pkl`
-- `sample_keys.npy`
-- `feature_summary.json`
-
-The Transformer branch should use `burst_seq.npy`, not a repeated global vector.
-
-## Recommended Experiments
-
-- Main comparison: MLP/statistical baseline, packet-only Mamba, burst-only Transformer, full Mamba + Transformer + gated fusion.
-- Representation ablation: fixed threshold burst vs adaptive burst, remove burst context, remove burst gap/position features.
-- Fusion ablation: `gated`, `concat`, `fixed`, `micro_only`, `burst_only`.
-- Sensitivity: `alpha`, `max_packets`, `max_bursts`, `fusion_hidden`.
-
-## Tests
-
-Use the Codex bundled Python or a local Python with `numpy`, `pandas`, and `pytest`:
-
-```powershell
-python -m pytest tests -q
-```

@@ -1,0 +1,14 @@
+experiment_id: E13_application8_micro_only_v1
+task: application8
+fusion: micro_only
+loss: focal
+seed: 42
+feature_id: iscxtor_full_p64_b32_a1_v1
+split_id: application8_group_seed42_v1
+features_dir: artifacts/features/iscxtor_full_p64_b32_a1_v1
+split_file: artifacts/splits/application8_group_seed42_v1.npz
+epochs: 80
+batch_size: 64
+learning_rate: 0.0002
+require_official_mamba: true
+
