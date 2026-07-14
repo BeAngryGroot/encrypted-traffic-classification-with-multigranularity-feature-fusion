@@ -171,7 +171,9 @@ def build_flow_features(
     alpha: float = 1.0,
     fixed_threshold: float | None = None,
 ) -> FlowFeatureResult:
-    ordered = _sorted_packets(packets)
+    # 两个分支必须共享同一个可观察前缀。先截断再计算阈值和 burst，避免
+    # packet_seq 偷看 max_packets 之后的包，也避免 burst_seq 与包级视图错位。
+    ordered = _sorted_packets(packets)[:max_packets]
     packet_seq = np.zeros((max_packets, len(PACKET_FEATURES)), dtype=np.float32)
     packet_mask = np.zeros((max_packets,), dtype=np.float32)
     burst_seq = np.zeros((max_bursts, len(BURST_FEATURES)), dtype=np.float32)
@@ -217,7 +219,7 @@ def build_flow_features(
         }
         burst_lookup[burst_id] = stats
 
-    for i, packet in enumerate(ordered[:max_packets]):
+    for i, packet in enumerate(ordered):
         burst_id = burst_ids[i]
         burst = burst_lookup[burst_id]
         pos_in_burst = i - int(burst["start"])

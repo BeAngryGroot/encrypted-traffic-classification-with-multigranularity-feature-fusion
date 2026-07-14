@@ -53,3 +53,15 @@ def test_build_flow_features_returns_packet_and_burst_sequences():
     np.testing.assert_allclose(result.packet_seq[:5, packet_pos], [0, 1, 0, 1, 0])
     np.testing.assert_allclose(result.burst_seq[:3, burst_packet_count], [2, 2, 1])
     assert result.burst_seq[2, burst_gap] > 0.1
+
+
+def test_packet_and_burst_views_use_only_observed_prefix():
+    packets = [
+        {"timestamp": i * 0.01, "packet_length": 100, "payload_length": 50, "direction": 1}
+        for i in range(3)
+    ]
+    result = build_flow_features(packets, max_packets=2, max_bursts=4, fixed_threshold=1.0)
+    burst_size = PACKET_FEATURES.index("burst_size")
+    burst_packet_count = BURST_FEATURES.index("packet_count")
+    assert result.packet_seq[0, burst_size] == 2
+    assert result.burst_seq[0, burst_packet_count] == 2
