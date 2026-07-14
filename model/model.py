@@ -51,8 +51,10 @@ class DualBranchFlowClassifier(nn.Module):
             d_in=cfg.micro_d_in,
             d_model=cfg.micro_d_model,
             n_layers=cfg.micro_layers,
-            d_state=64,
-            dropout=cfg.dropout
+            d_state=cfg.d_state,
+            dropout=cfg.dropout,
+            # 正式实验禁止静默回退；smoke 配置可显式关闭以先验证张量链路。
+            require_official=getattr(cfg, "require_official_mamba", True),
         )
 
         self.macro = MacroTransformer(

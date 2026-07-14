@@ -48,7 +48,16 @@ def build_training_command(config: ExperimentConfig, run_dir: Path, repo_root: P
         "--epochs", str(values.get("epochs", 80)),
         "--batch_size", str(values.get("batch_size", 64)),
         "--learning_rate", str(values.get("learning_rate", 0.0002)),
+        "--val_ratio", str(values.get("val_ratio", 0.15)),
+        "--test_ratio", str(values.get("test_ratio", 0.15)),
+        "--fixed_fusion_weight", str(values.get("fixed_fusion_weight", 0.5)),
     ]
+    for key, default in (
+        ("micro_d_model", 384), ("micro_layers", 4), ("d_state", 128),
+        ("macro_d_model", 96), ("macro_layers", 3), ("macro_heads", 6),
+        ("fusion_hidden", 192), ("num_workers", 0),
+    ):
+        command.extend([f"--{key}", str(values.get(key, default))])
     if bool(values.get("require_official_mamba", True)):
         command.append("--require_official_mamba")
     return command
@@ -100,4 +109,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
