@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import pickle
-import re
 from pathlib import Path
 from typing import Any
 
@@ -12,27 +11,10 @@ import pandas as pd
 
 try:
     from data.burst_features import BURST_FEATURES, PACKET_FEATURES, build_flow_features
+    from data.label_schema import infer_labels
 except ImportError:  # pragma: no cover - supports direct script execution
     from burst_features import BURST_FEATURES, PACKET_FEATURES, build_flow_features
-
-
-PRIMARY_LABELS = ["VPN", "TOR", "QUIC", "OTHER"]
-SECONDARY_LABELS = ["AUDIO", "CHAT", "FILE", "VIDEO", "VOIP", "UNKNOWN"]
-
-
-def _tokens_from_path(path: Path) -> set[str]:
-    text = str(path.with_suffix("")).upper()
-    return {token for token in re.split(r"[^A-Z0-9]+", text) if token}
-
-
-def infer_labels(path: Path) -> tuple[str, str, str]:
-    tokens = _tokens_from_path(path)
-    if "NONVPN" in tokens or "NON" in tokens:
-        primary = "OTHER"
-    else:
-        primary = next((label for label in PRIMARY_LABELS if label in tokens), "OTHER")
-    secondary = next((label for label in SECONDARY_LABELS if label in tokens), "UNKNOWN")
-    return primary, secondary, f"{primary}:{secondary}"
+    from label_schema import infer_labels
 
 
 def _packet_csvs(csv_dir: Path) -> list[Path]:
@@ -130,7 +112,10 @@ def build_features_from_csv_dir(
         df = pd.read_csv(packet_csv)
         if "flow_id" not in df.columns:
             raise ValueError(f"{packet_csv} missing required column: flow_id")
-        primary, secondary, combined = infer_labels(packet_csv)
+        label_info = infer_labels(packet_csv)
+        primary = label_info.primary
+        secondary = label_info.application
+        combined = label_info.combined
         source_name = packet_csv.stem.removesuffix("_packets")
 
         for flow_id, group in df.groupby("flow_id", sort=False):
