@@ -140,11 +140,14 @@ processed/segment15_burstp95_v1/
     ├── packet_mask.npy
     ├── burst_seq.npy
     ├── burst_mask.npy
-    ├── application_labels.npy
-    ├── tor_labels.npy
+    ├── primary_labels.npy          # 兼容训练入口：Tor/Non-Tor
+    ├── secondary_labels.npy        # 兼容训练入口：八类应用
+    ├── tor_labels.npy              # primary_labels 的语义别名
+    ├── application_labels.npy      # secondary_labels 的语义别名
     ├── sample_keys.npy
     ├── group_ids.npy
-    └── label_mappings.pkl
+    ├── label_mappings.pkl
+    └── split_seed42.npz
 ```
 
 ## 7. 失败处理与可恢复性
