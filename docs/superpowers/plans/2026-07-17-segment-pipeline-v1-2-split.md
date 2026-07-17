@@ -248,7 +248,7 @@ Expected: all commands exit zero and pytest reports no failures.
 
 Confirm synthetic output contains target 0.80/0.10/0.10, train-only `D_max`, no group overlap, packet conservation, iteration history, and no stale v1.1 paths in active v1.2 config/docs.
 
-- [ ] **Step 3: Commit and push the existing feature branch**
+- [x] **Step 3: Commit and push the existing feature branch**
 
 ```text
 git add README.md data docs experiments tests
@@ -256,6 +256,6 @@ git commit -m "feat: 增加80-10-10迭代划分管线v1.2"
 git push origin feature/segment-burst-preprocessing-v1
 ```
 
-- [ ] **Step 4: Provide the server pull and smoke command**
+- [x] **Step 4: Provide the server pull and smoke command**
 
 Server commands remain `git pull --ff-only origin feature/segment-burst-preprocessing-v1` and `python -m data.run_segment_feature_pipeline`.
