@@ -91,6 +91,141 @@ def create_stratified_group_assignment(
     return assignment
 
 
+def create_weighted_group_assignment(
+    group_labels: Mapping[str, str],
+    group_weights: Mapping[str, float],
+    group_primary: Mapping[str, str],
+    val_ratio: float = 0.15,
+    test_ratio: float = 0.15,
+    seed: int = 42,
+    *,
+    trials: int = 5000,
+    require_class_coverage: bool = True,
+) -> dict[str, str]:
+    """按有效片段数搜索采集组划分，同时保持应用类别覆盖。
+
+    每个采集组始终整体进入一个集合；权重只影响候选方案的评分，不会把
+    同一源文件拆开。这样既阻止同源泄漏，又能缓解大文件集中到测试集的情况。
+    """
+
+    if val_ratio < 0 or test_ratio < 0 or val_ratio + test_ratio >= 1:
+        raise ValueError("val_ratio and test_ratio must be non-negative and sum to less than 1")
+    if not group_labels:
+        raise ValueError("group_labels must not be empty")
+    if int(trials) < 1:
+        raise ValueError("trials must be at least 1")
+
+    labels = {str(group): str(label) for group, label in group_labels.items()}
+    weights = {str(group): float(weight) for group, weight in group_weights.items()}
+    primary = {str(group): str(label) for group, label in group_primary.items()}
+    expected = set(labels)
+    if set(weights) != expected or set(primary) != expected:
+        raise ValueError("group_labels, group_weights and group_primary must contain identical groups")
+    if any(not np.isfinite(weight) or weight < 0 for weight in weights.values()):
+        raise ValueError("group weights must be finite and non-negative")
+    if sum(weights.values()) <= 0:
+        raise ValueError("at least one group weight must be positive")
+
+    by_label: dict[str, list[str]] = {}
+    for group, label in labels.items():
+        by_label.setdefault(label, []).append(group)
+    for label, groups in by_label.items():
+        if require_class_coverage and (val_ratio > 0 or test_ratio > 0) and len(groups) < 3:
+            raise ValueError(f"class {label} needs at least 3 capture groups")
+
+    target = {
+        "train": 1.0 - float(val_ratio) - float(test_ratio),
+        "val": float(val_ratio),
+        "test": float(test_ratio),
+    }
+    split_names = ("train", "val", "test")
+    active_split_names = tuple(name for name in split_names if target[name] > 0)
+
+    def split_counts(size: int) -> tuple[int, int]:
+        test_count = max(1, int(round(size * test_ratio))) if test_ratio else 0
+        val_count = max(1, int(round(size * val_ratio))) if val_ratio else 0
+        while test_count + val_count >= size:
+            if val_count >= test_count and val_count > 0:
+                val_count -= 1
+            elif test_count > 0:
+                test_count -= 1
+        return val_count, test_count
+
+    def ratio_error(groups: list[str], assignment: Mapping[str, str]) -> float:
+        total = sum(weights[group] for group in groups)
+        if total <= 0:
+            return 0.0
+        return sum(
+            (
+                sum(weights[group] for group in groups if assignment[group] == split) / total
+                - target[split]
+            ) ** 2
+            for split in split_names
+        )
+
+    def score(assignment: Mapping[str, str]) -> float:
+        # 总体比例最重要，同时兼顾八类应用及 Tor/Non-Tor 的分布。
+        value = 2.0 * ratio_error(sorted(labels), assignment)
+        value += float(np.mean([
+            ratio_error(sorted(groups), assignment)
+            for groups in by_label.values()
+        ]))
+        primary_groups = {
+            name: sorted(group for group, value in primary.items() if value == name)
+            for name in sorted(set(primary.values()))
+        }
+        value += 0.5 * float(np.mean([
+            ratio_error(groups, assignment) for groups in primary_groups.values()
+        ]))
+        return value
+
+    def has_primary_coverage(assignment: Mapping[str, str]) -> bool:
+        for name in set(primary.values()):
+            groups = [group for group, value in primary.items() if value == name]
+            if (
+                len(groups) >= len(active_split_names)
+                and {assignment[group] for group in groups} != set(active_split_names)
+            ):
+                return False
+        return True
+
+    rng = np.random.default_rng(int(seed))
+    best: dict[str, str] | None = None
+    best_key: tuple[float, tuple[tuple[str, str], ...]] | None = None
+    fallback: dict[str, str] | None = None
+    fallback_key: tuple[float, tuple[tuple[str, str], ...]] | None = None
+    for _ in range(int(trials)):
+        candidate: dict[str, str] = {}
+        for label in sorted(by_label):
+            groups = sorted(set(by_label[label]))
+            shuffled = [groups[index] for index in rng.permutation(len(groups))]
+            val_count, test_count = split_counts(len(groups))
+            for group in shuffled[:test_count]:
+                candidate[group] = "test"
+            for group in shuffled[test_count:test_count + val_count]:
+                candidate[group] = "val"
+            for group in shuffled[test_count + val_count:]:
+                candidate[group] = "train"
+
+        deterministic = tuple(sorted(candidate.items()))
+        candidate_key = (score(candidate), deterministic)
+        if fallback_key is None or candidate_key < fallback_key:
+            fallback, fallback_key = candidate.copy(), candidate_key
+        if has_primary_coverage(candidate) and (best_key is None or candidate_key < best_key):
+            best, best_key = candidate.copy(), candidate_key
+
+    if best is None and require_class_coverage:
+        raise ValueError(
+            "no candidate split covers every required Tor/NonTor subset; "
+            "inspect capture-group labels or increase split_search_trials"
+        )
+    # 极小 smoke 集可能无法同时覆盖 Tor/Non-Tor；此时保留应用覆盖并采用最佳比例。
+    result = best if best is not None else fallback
+    if result is None:  # pragma: no cover - trials 已校验，属于防御分支
+        raise RuntimeError("failed to create a weighted group assignment")
+    return result
+
+
 def indices_from_group_assignment(
     groups: np.ndarray,
     assignment: Mapping[str, str],

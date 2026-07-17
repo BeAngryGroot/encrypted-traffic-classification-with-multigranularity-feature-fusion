@@ -10,10 +10,72 @@ sys.path.insert(0, str(ROOT))
 from data.splits import (  # noqa: E402
     create_group_split,
     create_stratified_group_assignment,
+    create_weighted_group_assignment,
     indices_from_group_assignment,
     load_group_split,
     save_group_split,
 )
+
+
+def test_weighted_group_assignment_is_deterministic_and_balances_samples():
+    """带权划分应兼顾应用覆盖和实际片段数，而不是只平分文件个数。"""
+
+    labels = {
+        f"{label}-{index}": label
+        for label in ["A", "B"]
+        for index in range(7)
+    }
+    weights = {
+        group: float([70, 15, 15, 35, 8, 7, 50][int(group.rsplit("-", 1)[1])])
+        for group in labels
+    }
+    primary = {
+        group: ("TOR" if int(group.rsplit("-", 1)[1]) % 2 == 0 else "NONTOR")
+        for group in labels
+    }
+
+    first = create_weighted_group_assignment(
+        labels,
+        weights,
+        primary,
+        val_ratio=0.15,
+        test_ratio=0.15,
+        seed=42,
+        trials=2000,
+    )
+    second = create_weighted_group_assignment(
+        labels,
+        weights,
+        primary,
+        val_ratio=0.15,
+        test_ratio=0.15,
+        seed=42,
+        trials=2000,
+    )
+
+    assert first == second
+    assert set(first) == set(labels)
+    for label in {"A", "B"}:
+        assert {first[group] for group in labels if labels[group] == label} == {
+            "train",
+            "val",
+            "test",
+        }
+    for primary_label in {"TOR", "NONTOR"}:
+        assert {first[group] for group in labels if primary[group] == primary_label} == {
+            "train",
+            "val",
+            "test",
+        }
+
+    totals = {
+        split: sum(weights[group] for group in labels if first[group] == split)
+        for split in ("train", "val", "test")
+    }
+    total = sum(totals.values())
+    assert abs(totals["train"] / total - 0.70) < 0.10
+    assert abs(totals["val"] / total - 0.15) < 0.08
+    assert abs(totals["test"] / total - 0.15) < 0.08
 
 
 def test_group_split_has_no_overlap_and_is_reproducible(tmp_path):

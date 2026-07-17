@@ -18,11 +18,11 @@ def test_all_shipped_configs_parse_and_have_unique_ids():
 
 
 def test_segment15_smoke_config_targets_new_versioned_features():
-    path = ROOT / "experiments/configs/smoke/application8_segment15_burstp95_smoke_v1.yaml"
+    path = ROOT / "experiments/configs/smoke/application8_segment15_burstp95_smoke_v1_1.yaml"
 
     config = load_experiment_config(path, repo_root=ROOT)
 
     assert config.task == "application8"
     assert config.fusion == "gated"
-    assert config.feature_id == "segment15_burstp95_v1"
+    assert config.feature_id == "segment15_burstp95_v1_1"
     assert config.split_file.name == "split_seed42.npz"

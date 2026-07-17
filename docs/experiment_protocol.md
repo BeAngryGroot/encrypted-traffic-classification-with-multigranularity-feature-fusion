@@ -12,18 +12,19 @@
 
 PCAP 转换会按 60 秒空闲超时和 TCP FIN/RST 拆父会话。转换已经完成时，不重新解析 PCAP，也不修改 `csv/full_session60_v1`。
 
-新版入口为 `data/run_segment_feature_pipeline.py`。服务器只修改文件顶部三个值：
+新版入口为 `data/run_segment_feature_pipeline.py`。服务器确认文件顶部四个值：
 
 ```python
 CSV_DIR = Path("/data3/wsb_workspace/study/data/Dual_data/csv/full_session60_v1")
-OUTPUT_DIR = Path("/data3/wsb_workspace/study/data/Dual_data/processed/segment15_burstp95_v1")
+OUTPUT_DIR = Path("/data3/wsb_workspace/study/data/Dual_data/processed/segment15_burstp95_v1_1")
 RUN_MODE = "smoke"
+WORKERS = 2
 ```
 
 ### 2.2 构建15秒片段与双粒度特征
 
 ```text
-python data/run_segment_feature_pipeline.py
+python -m data.run_segment_feature_pipeline
 ```
 
 处理顺序固定为：
@@ -36,16 +37,16 @@ python data/run_segment_feature_pipeline.py
 6. 超容量片段优先在 burst 边界拆分，禁止截断尾包；
 7. 生成共享同一 burst 边界的 `packet_seq` 和 `burst_seq`。
 
-smoke 成功后检查：输入包数是否等于建模包数加单包审计数、三个集合是否无采集组交集、`D_max` 来源是否为 train、特征形状是否为 `[N,64,16]` 和 `[N,32,12]`。随后把 `RUN_MODE` 改为 `"full"`，再次运行同一个 Python 文件。
+smoke 对每个入选源文件只读取包数最少的 5 条完整父流；完整性优先于固定包数，不会在流内截断。成功后检查：输入包数是否等于建模包数加单包审计数、三个集合是否无采集组交集、`D_max` 来源是否为 train、特征形状是否为 `[N,64,16]` 和 `[N,32,12]`。`manifests/split_balance.csv` 与 `statistics/split_balance_summary.json` 分别记录划分前有效片段权重和生成后真实样本比例。随后把 `RUN_MODE` 改为 `"full"`，再次运行同一个 Python 文件。
 
-本版本特征 ID 固定为 `segment15_burstp95_v1`。旧 `build_features.py` 只用于旧版前缀截断实验，不用于本版正式数据。
+本版本特征 ID 固定为 `segment15_burstp95_v1_1`。划分以源采集文件为不可拆分组，通过 5000 次确定性候选搜索尽量使总体、八类应用和 Tor/Non-Tor 的有效片段数接近 70/15/15；验证集和测试集不做重采样。旧 `build_features.py` 只用于旧版前缀截断实验，不用于本版正式数据。
 
 ## 3. 运行实验
 
 新特征首先运行三轮 smoke：
 
 ```text
-python experiments/run_experiment.py --config experiments/configs/smoke/application8_segment15_burstp95_smoke_v1.yaml
+python experiments/run_experiment.py --config experiments/configs/smoke/application8_segment15_burstp95_smoke_v1_1.yaml
 ```
 
 先 dry-run 检查解析后的路径、Git commit、feature ID、split ID 与 seed：
