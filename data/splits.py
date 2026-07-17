@@ -194,6 +194,26 @@ def create_variable_weighted_group_assignment(
     rng = np.random.default_rng(int(seed))
     best: dict[str, str] | None = None
     best_key: tuple[float, float, tuple[tuple[str, str], ...]] | None = None
+
+    def candidate_key(
+        candidate: Mapping[str, str],
+    ) -> tuple[float, float, tuple[tuple[str, str], ...]]:
+        report = evaluate_weighted_assignment(
+            labels,
+            weights,
+            primary,
+            candidate,
+            val_ratio=val_ratio,
+            test_ratio=test_ratio,
+            overall_tolerance=overall_tolerance,
+            min_class_holdout=min_class_holdout,
+        )
+        return (
+            violation_amount(report),
+            ratio_error(report),
+            tuple(sorted(candidate.items())),
+        )
+
     for _ in range(int(trials)):
         candidate: dict[str, str] = {}
         for label in sorted(by_label):
@@ -208,24 +228,54 @@ def create_variable_weighted_group_assignment(
                     candidate[group] = split
                 offset += count
 
-        report = evaluate_weighted_assignment(
-            labels,
-            weights,
-            primary,
-            candidate,
-            val_ratio=val_ratio,
-            test_ratio=test_ratio,
-            overall_tolerance=overall_tolerance,
-            min_class_holdout=min_class_holdout,
-        )
-        deterministic = tuple(sorted(candidate.items()))
-        key = (violation_amount(report), ratio_error(report), deterministic)
+        key = candidate_key(candidate)
         if best_key is None or key < best_key:
             best = candidate.copy()
             best_key = key
 
     if best is None:  # pragma: no cover - trials已校验，保留防御分支
         raise RuntimeError("failed to generate a variable weighted assignment")
+
+    # 对随机候选做确定性的单组移动和同类双组交换，减少有限试验造成的偶然偏差。
+    for _ in range(20):
+        improved = best
+        improved_key = best_key
+        label_split_counts = {
+            label: {
+                split: sum(best[group] == split for group in groups)
+                for split in split_names
+            }
+            for label, groups in by_label.items()
+        }
+        for group in sorted(best):
+            current = best[group]
+            label = labels[group]
+            if label_split_counts[label][current] <= 1:
+                continue
+            for target_split in split_names:
+                if target_split == current:
+                    continue
+                candidate = best.copy()
+                candidate[group] = target_split
+                key = candidate_key(candidate)
+                if key < improved_key:
+                    improved, improved_key = candidate, key
+
+        for label in sorted(by_label):
+            groups = sorted(by_label[label])
+            for left_index, left in enumerate(groups):
+                for right in groups[left_index + 1:]:
+                    if best[left] == best[right]:
+                        continue
+                    candidate = best.copy()
+                    candidate[left], candidate[right] = candidate[right], candidate[left]
+                    key = candidate_key(candidate)
+                    if key < improved_key:
+                        improved, improved_key = candidate, key
+
+        if improved_key >= best_key:
+            break
+        best, best_key = improved, improved_key
     return best
 
 

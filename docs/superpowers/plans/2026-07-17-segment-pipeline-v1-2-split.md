@@ -231,7 +231,7 @@ Expected: all selected tests pass.
 
 **Files:** All modified files from Tasks 1-3.
 
-- [ ] **Step 1: Run direct-entry, dry-run, and complete tests**
+- [x] **Step 1: Run direct-entry, dry-run, and complete tests**
 
 Run:
 
@@ -244,7 +244,7 @@ git diff --check
 
 Expected: all commands exit zero and pytest reports no failures.
 
-- [ ] **Step 2: Review generated test audits and source diff**
+- [x] **Step 2: Review generated test audits and source diff**
 
 Confirm synthetic output contains target 0.80/0.10/0.10, train-only `D_max`, no group overlap, packet conservation, iteration history, and no stale v1.1 paths in active v1.2 config/docs.
 

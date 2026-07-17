@@ -121,6 +121,7 @@ def test_refinement_uses_final_counts_and_final_train_only_dmax(tmp_path):
 
     assert result.group_sample_counts == expected_counts
     assert len(result.history) <= 3
+    assert result.converged
     assert set(result.dmax_train_groups) == {
         group for group, split in result.assignment.items() if split == "train"
     }

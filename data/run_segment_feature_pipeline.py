@@ -770,7 +770,8 @@ def _refine_group_assignment(
             primary,
             settings.val_ratio,
             settings.test_ratio,
-            settings.seed + round_index,
+            # 每轮复用同一候选随机序列；只有权重变化才应改变最优归属。
+            settings.seed,
             trials=settings.split_search_trials,
             overall_tolerance=settings.overall_split_tolerance,
             min_class_holdout=settings.min_class_holdout_ratio,
