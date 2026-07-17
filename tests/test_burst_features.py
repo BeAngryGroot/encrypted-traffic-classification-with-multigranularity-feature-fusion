@@ -2,6 +2,7 @@ from pathlib import Path
 import sys
 
 import numpy as np
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -65,3 +66,30 @@ def test_packet_and_burst_views_use_only_observed_prefix():
     burst_packet_count = BURST_FEATURES.index("packet_count")
     assert result.packet_seq[0, burst_size] == 2
     assert result.burst_seq[0, burst_packet_count] == 2
+
+
+def test_precomputed_bursts_are_shared_by_packet_and_burst_views():
+    packets = sample_packets()[:4]
+
+    result = build_flow_features(
+        packets,
+        max_packets=4,
+        max_bursts=3,
+        precomputed_burst_ids=[0, 0, 0, 1],
+        truncate=False,
+    )
+
+    burst_size = PACKET_FEATURES.index("burst_size")
+    burst_count = BURST_FEATURES.index("packet_count")
+    assert result.packet_seq[:4, burst_size].tolist() == [3, 3, 3, 1]
+    assert result.burst_seq[:2, burst_count].tolist() == [3, 1]
+
+
+def test_new_pipeline_mode_rejects_overflow_instead_of_truncating():
+    with pytest.raises(ValueError, match="capacity"):
+        build_flow_features(
+            sample_packets(),
+            max_packets=2,
+            max_bursts=4,
+            truncate=False,
+        )

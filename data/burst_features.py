@@ -170,10 +170,31 @@ def build_flow_features(
     max_bursts: int = 32,
     alpha: float = 1.0,
     fixed_threshold: float | None = None,
+    precomputed_burst_ids: Sequence[int] | None = None,
+    truncate: bool = True,
 ) -> FlowFeatureResult:
-    # 两个分支必须共享同一个可观察前缀。先截断再计算阈值和 burst，避免
-    # packet_seq 偷看 max_packets 之后的包，也避免 burst_seq 与包级视图错位。
-    ordered = _sorted_packets(packets)[:max_packets]
+    # 旧入口保留前缀截断以兼容既有实验；新版片段管线必须传 truncate=False，
+    # 由容量拆分保证输入合法，从而禁止静默丢弃尾包。
+    if precomputed_burst_ids is not None:
+        if len(precomputed_burst_ids) != len(packets):
+            raise ValueError("precomputed burst IDs must match packet count")
+        paired = sorted(
+            zip(packets, precomputed_burst_ids),
+            key=lambda item: _get_number(
+                item[0], "timestamp", "packet_time", "time", "ts", default=0.0
+            ),
+        )
+        ordered_all = [item[0] for item in paired]
+        provided_ids = [int(item[1]) for item in paired]
+    else:
+        ordered_all = _sorted_packets(packets)
+        provided_ids = None
+
+    if not truncate and len(ordered_all) > max_packets:
+        raise ValueError("packet count exceeds model capacity; split before feature building")
+    ordered = ordered_all[:max_packets] if truncate else ordered_all
+    if provided_ids is not None:
+        provided_ids = provided_ids[:len(ordered)]
     packet_seq = np.zeros((max_packets, len(PACKET_FEATURES)), dtype=np.float32)
     packet_mask = np.zeros((max_packets,), dtype=np.float32)
     burst_seq = np.zeros((max_bursts, len(BURST_FEATURES)), dtype=np.float32)
@@ -187,7 +208,18 @@ def build_flow_features(
     payload_lengths = _payload_lengths(ordered)
     directions = _directions(ordered)
     iats = compute_iats(timestamps)
-    burst_ids = assign_bursts(ordered, alpha=alpha, fixed_threshold=fixed_threshold)
+    if provided_ids is None:
+        burst_ids = assign_bursts(ordered, alpha=alpha, fixed_threshold=fixed_threshold)
+    else:
+        expected = list(range(max(provided_ids, default=-1) + 1))
+        observed = list(dict.fromkeys(provided_ids))
+        if provided_ids and (provided_ids[0] != 0 or observed != expected):
+            raise ValueError("precomputed burst IDs must be contiguous and start at zero")
+        if any(right < left for left, right in zip(provided_ids, provided_ids[1:])):
+            raise ValueError("precomputed burst IDs must be monotonic")
+        if not truncate and len(observed) > max_bursts:
+            raise ValueError("burst count exceeds model capacity; split before feature building")
+        burst_ids = provided_ids
     slices = _burst_slices(burst_ids)
 
     burst_lookup: dict[int, dict[str, float]] = {}
