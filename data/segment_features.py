@@ -213,4 +213,7 @@ def pack_by_burst_capacity(
         current_burst_count += 1
         current_forced = current_forced or forced
     flush()
+    if len(samples) == 1 and samples[0].split_reason == "burst_capacity_boundary":
+        only = samples[0]
+        samples[0] = CapacitySample(only.packets, only.burst_ids, "none")
     return samples

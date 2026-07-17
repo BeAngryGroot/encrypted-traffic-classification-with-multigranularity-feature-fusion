@@ -146,3 +146,25 @@ def test_single_oversized_burst_uses_packet_capacity_cap():
     assert [len(sample.packets) for sample in samples] == [3, 3, 1]
     assert [packet["frame_index"] for sample in samples for packet in sample.packets] == list(range(7))
     assert all(sample.split_reason == "packet_capacity_cap" for sample in samples)
+
+
+def test_sample_within_capacity_is_not_reported_as_capacity_split():
+    packets = [
+        {"frame_index": 0, "timestamp": 0.0, "direction": 1.0},
+        {"frame_index": 1, "timestamp": 0.1, "direction": 1.0},
+    ]
+    assignment = BurstAssignment(
+        burst_ids=[0, 0],
+        split_reasons=["flow_start", "continuation"],
+        adaptive_threshold=1.0,
+    )
+
+    samples = pack_by_burst_capacity(
+        packets,
+        assignment,
+        max_packets=4,
+        max_bursts=2,
+    )
+
+    assert len(samples) == 1
+    assert samples[0].split_reason == "none"
