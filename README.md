@@ -13,14 +13,34 @@
 ```text
 pcap/pcapng
   -> 五元组会话化 packet/flow CSV
-  -> 同一个 max_packets 观察前缀
-  -> packet_seq + 自适应同向 burst_seq
+  -> 15秒非重叠双向流片段（完整覆盖）
+  -> 训练集 P95 时长约束的自适应同向 burst
+  -> burst 边界无损容量拆分
+  -> 对齐的 packet_seq + burst_seq
   -> Mamba2 + burst Transformer
   -> gated fusion
   -> application8 / tor_binary
 ```
 
-自适应 burst 阈值为：`T_flow = median(IAT) + alpha * IQR(IAT)`。正式实验必须使用 `mamba_ssm.Mamba2`；轻量 SSM 回退只用于 smoke 跑通，不得报告为论文结果。
+自适应 burst 阈值为：`T_segment = median(IAT) + alpha * IQR(IAT)`。`D_max` 只由训练集自然 burst 时长的 P95 计算；验证集和测试集不参与。正式实验必须使用 `mamba_ssm.Mamba2`；轻量 SSM 回退只用于 smoke 跑通，不得报告为论文结果。
+
+## 首版片段特征运行
+
+服务器拉取 `feature/segment-burst-preprocessing-v1` 后，打开 `data/run_segment_feature_pipeline.py`，只确认文件顶部的 `CSV_DIR`、`OUTPUT_DIR` 和 `RUN_MODE`。
+
+第一次保持 `RUN_MODE = "smoke"`，直接运行：
+
+```text
+python data/run_segment_feature_pipeline.py
+```
+
+脚本会输出输入包数、建模包数、单包审计数、训练集 `D_max`、特征形状和三个集合样本数。确认成功后把 `RUN_MODE` 改为 `"full"`，再次运行同一个文件。旧 CSV 和旧特征不会被覆盖。
+
+生成 smoke 特征后运行三轮小模型测试：
+
+```text
+python experiments/run_experiment.py --config experiments/configs/smoke/application8_segment15_burstp95_smoke_v1.yaml
+```
 
 ## 三阶段运行
 
@@ -30,17 +50,16 @@ pcap/pcapng
 
 完整命令、数据清单、版本命名和服务器执行顺序见 [实验协议](docs/experiment_protocol.md)。
 
-快速检查配置但不启动训练：
+旧版前缀特征的 smoke 配置仍保留用于对照。快速检查新版配置但不启动训练：
 
 ```powershell
-python experiments/run_experiment.py --config experiments/configs/smoke/application8_smoke_v1.yaml --dry-run
+python experiments/run_experiment.py --config experiments/configs/smoke/application8_segment15_burstp95_smoke_v1.yaml --dry-run
 ```
 
 运行 smoke：
 
 ```powershell
-python experiments/run_experiment.py --config experiments/configs/smoke/application8_smoke_v1.yaml
+python experiments/run_experiment.py --config experiments/configs/smoke/application8_segment15_burstp95_smoke_v1.yaml
 ```
 
 每次实验写入 `artifacts/runs/<experiment_id>/seed_<seed>/`，已有目录默认拒绝覆盖。生成数据、特征、权重和运行结果均由 Git 忽略，配置与代码进入版本控制。
-

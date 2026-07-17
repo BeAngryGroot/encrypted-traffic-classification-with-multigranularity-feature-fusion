@@ -8,35 +8,45 @@
 
 ## 2. 数据处理顺序
 
-### 2.1 先做 smoke 采样
+### 2.1 使用已有完整会话 CSV
 
-先将少量 pcap 转 CSV；PCAP 转换会按 60 秒空闲超时和 TCP FIN/RST 拆会话：
+PCAP 转换会按 60 秒空闲超时和 TCP FIN/RST 拆父会话。转换已经完成时，不重新解析 PCAP，也不修改 `csv/full_session60_v1`。
 
-```powershell
-python data/pcap_to_csv.py --input_dir <pcap根目录> --output_dir artifacts/csv/iscxtor_full_v1 --flow_timeout 60 --workers 8
+新版入口为 `data/run_segment_feature_pipeline.py`。服务器只修改文件顶部三个值：
+
+```python
+CSV_DIR = Path("/data3/wsb_workspace/study/data/Dual_data/csv/full_session60_v1")
+OUTPUT_DIR = Path("/data3/wsb_workspace/study/data/Dual_data/processed/segment15_burstp95_v1")
+RUN_MODE = "smoke"
 ```
 
-从生成的 flow/packet CSV 中按完整 flow 采样，不截断单个 flow：
+### 2.2 构建15秒片段与双粒度特征
 
-```powershell
-python data/sample_flows_by_ratio.py --input_dir artifacts/csv/iscxtor_full_v1 --output_dir artifacts/csv/iscxtor_smoke_v1 --ratio 0.02 --max_flows_per_file 50 --seed 42
+```text
+python data/run_segment_feature_pipeline.py
 ```
 
-### 2.2 构建对齐的双粒度特征
+处理顺序固定为：
 
-```powershell
-python data/build_features.py --csv_dir artifacts/csv/iscxtor_smoke_v1 --output_dir artifacts/features/iscxtor_smoke_p32_b16_v1 --max_packets 32 --max_bursts 16 --alpha 1.0
-```
+1. 以源 PCAP/packet CSV 为 `capture_group` 冻结 `70%/15%/15%` 划分；
+2. 每条父会话切成15秒非重叠片段，尾片段保留；
+3. 单包片段保留在清单中但不进入主模型；
+4. 只用训练集自然 burst 时长计算全局 `D_max=P95`；
+5. 按方向变化、`IAT>T_segment` 或持续时间超限生成最终 burst；
+6. 超容量片段优先在 burst 边界拆分，禁止截断尾包；
+7. 生成共享同一 burst 边界的 `packet_seq` 和 `burst_seq`。
 
-正式特征：
+smoke 成功后检查：输入包数是否等于建模包数加单包审计数、三个集合是否无采集组交集、`D_max` 来源是否为 train、特征形状是否为 `[N,64,16]` 和 `[N,32,12]`。随后把 `RUN_MODE` 改为 `"full"`，再次运行同一个 Python 文件。
 
-```powershell
-python data/build_features.py --csv_dir artifacts/csv/iscxtor_full_v1 --output_dir artifacts/features/iscxtor_full_p64_b32_a1_v1 --max_packets 64 --max_bursts 32 --alpha 1.0 --source_manifest <数据清单.csv>
-```
-
-特征 ID 必须包含数据范围、`max_packets`、`max_bursts`、`alpha` 和版本。包级与 burst 级特征均只使用同一个 `max_packets` 观察前缀。
+本版本特征 ID 固定为 `segment15_burstp95_v1`。旧 `build_features.py` 只用于旧版前缀截断实验，不用于本版正式数据。
 
 ## 3. 运行实验
+
+新特征首先运行三轮 smoke：
+
+```text
+python experiments/run_experiment.py --config experiments/configs/smoke/application8_segment15_burstp95_smoke_v1.yaml
+```
 
 先 dry-run 检查解析后的路径、Git commit、feature ID、split ID 与 seed：
 
