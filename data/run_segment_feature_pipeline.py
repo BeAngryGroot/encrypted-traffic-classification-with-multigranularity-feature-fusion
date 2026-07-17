@@ -38,7 +38,9 @@ from data.segment_features import (
     time_segment_packets,
 )
 from data.splits import (
-    create_weighted_group_assignment,
+    SplitQualityReport,
+    create_variable_weighted_group_assignment,
+    evaluate_weighted_assignment,
     indices_from_group_assignment,
     save_group_split,
 )
@@ -67,6 +69,9 @@ MAX_BURSTS = 32
 SMOKE_FLOWS_PER_FILE = 5
 SPLIT_SEARCH_TRIALS = 5000
 READ_CHUNKSIZE = 200_000
+MAX_SPLIT_ITERATIONS = 3
+OVERALL_SPLIT_TOLERANCE = 0.03
+MIN_CLASS_HOLDOUT_RATIO = 0.05
 
 
 @dataclass(frozen=True)
@@ -89,6 +94,9 @@ class SegmentPipelineSettings:
     smoke_flows_per_file: int = SMOKE_FLOWS_PER_FILE
     split_search_trials: int = SPLIT_SEARCH_TRIALS
     read_chunksize: int = READ_CHUNKSIZE
+    max_split_iterations: int = MAX_SPLIT_ITERATIONS
+    overall_split_tolerance: float = OVERALL_SPLIT_TOLERANCE
+    min_class_holdout_ratio: float = MIN_CLASS_HOLDOUT_RATIO
 
 
 @dataclass(frozen=True)
@@ -147,6 +155,29 @@ class SourceFeatureBatch:
     elapsed_seconds: float
 
 
+@dataclass(frozen=True)
+class SourceSampleCount:
+    """在给定D_max下，一个源文件将产生的最终样本数量。"""
+
+    source: SourceInfo
+    final_sample_count: int
+    modeled_packets: int
+    elapsed_seconds: float
+
+
+@dataclass(frozen=True)
+class SplitRefinementResult:
+    """迭代划分的最终状态和可复现审计信息。"""
+
+    assignment: dict[str, str]
+    dmax: float
+    dmax_train_groups: tuple[str, ...]
+    group_sample_counts: dict[str, int]
+    history: tuple[dict[str, Any], ...]
+    converged: bool
+    quality: SplitQualityReport
+
+
 REQUIRED_COLUMNS = {
     "flow_id",
     "timestamp",
@@ -178,6 +209,12 @@ def _validate_settings(settings: SegmentPipelineSettings) -> None:
         raise ValueError("smoke_flows_per_file must be at least 1")
     if settings.split_search_trials < 1 or settings.read_chunksize < 1:
         raise ValueError("split_search_trials and read_chunksize must be positive")
+    if settings.max_split_iterations < 1:
+        raise ValueError("max_split_iterations must be at least 1")
+    if settings.overall_split_tolerance < 0:
+        raise ValueError("overall_split_tolerance must be non-negative")
+    if not 0 <= settings.min_class_holdout_ratio < 1:
+        raise ValueError("min_class_holdout_ratio must be in [0, 1)")
 
 
 def _source_info(path: Path, csv_root: Path) -> SourceInfo:
@@ -429,6 +466,45 @@ def _empty_feature_array(rows: int, columns: int) -> np.ndarray:
     return np.empty((0, rows, columns), dtype=np.float32)
 
 
+def _count_source_samples_task(
+    task: tuple[SourceInfo, SegmentPipelineSettings, tuple[str, ...] | None, float],
+) -> SourceSampleCount:
+    """只执行最终Burst和容量切分，不构建大特征数组。"""
+
+    source, settings, selected_flows, dmax = task
+    started = time.perf_counter()
+    final_sample_count = 0
+    modeled_packets = 0
+    selection = {source.source_key: selected_flows}
+    for segment in _iter_initial_segments(
+        [source],
+        window_seconds=settings.window_seconds,
+        selected_flow_ids=selection,
+        chunksize=settings.read_chunksize,
+    ):
+        if len(segment.packets) < settings.min_model_packets:
+            continue
+        final_assignment = assign_bursts_with_reasons(
+            segment.packets,
+            alpha=settings.alpha,
+            max_duration=dmax,
+        )
+        capacity_samples = pack_by_burst_capacity(
+            segment.packets,
+            final_assignment,
+            max_packets=settings.max_packets,
+            max_bursts=settings.max_bursts,
+        )
+        final_sample_count += len(capacity_samples)
+        modeled_packets += sum(len(sample.packets) for sample in capacity_samples)
+    return SourceSampleCount(
+        source=source,
+        final_sample_count=final_sample_count,
+        modeled_packets=modeled_packets,
+        elapsed_seconds=time.perf_counter() - started,
+    )
+
+
 def _build_source_task(
     task: tuple[
         SourceInfo,
@@ -606,6 +682,162 @@ def _run_source_tasks(worker: Any, tasks: list[Any], workers: int, stage: str) -
     return results
 
 
+def _training_dmax(
+    profiles: list[SourceProfile],
+    assignment: dict[str, str],
+    quantile: float,
+) -> tuple[float, tuple[str, ...]]:
+    """严格只拼接当前训练采集组的自然Burst时长。"""
+
+    train_groups = tuple(sorted(group for group, split in assignment.items() if split == "train"))
+    durations = [
+        duration
+        for profile in profiles
+        if profile.source.capture_group in train_groups
+        for duration in profile.natural_durations
+    ]
+    if not durations:
+        raise ValueError("training split has no multi-packet natural bursts for D_max")
+    return (
+        float(np.quantile(np.asarray(durations, dtype=np.float64), quantile)),
+        train_groups,
+    )
+
+
+def _default_count_runner(
+    sources: list[SourceInfo],
+    settings: SegmentPipelineSettings,
+    selected_flows: dict[str, tuple[str, ...] | None],
+    dmax: float,
+) -> list[SourceSampleCount]:
+    tasks = [
+        (source, settings, selected_flows[source.source_key], dmax)
+        for source in sources
+    ]
+    return _run_source_tasks(
+        _count_source_samples_task,
+        tasks,
+        settings.workers,
+        "计数",
+    )
+
+
+def _refine_group_assignment(
+    sources: list[SourceInfo],
+    profiles: list[SourceProfile],
+    settings: SegmentPipelineSettings,
+    selected_flows: dict[str, tuple[str, ...] | None],
+    *,
+    count_runner: Any | None = None,
+) -> SplitRefinementResult:
+    """用最终容量样本数迭代更新采集组划分和训练集D_max。"""
+
+    labels = {source.capture_group: source.application for source in sources}
+    primary = {source.capture_group: source.primary for source in sources}
+    initial_weights = {
+        profile.source.capture_group: float(max(1, profile.eligible_segments))
+        for profile in profiles
+    }
+    assignment = create_variable_weighted_group_assignment(
+        labels,
+        initial_weights,
+        primary,
+        settings.val_ratio,
+        settings.test_ratio,
+        settings.seed,
+        trials=settings.split_search_trials,
+        overall_tolerance=settings.overall_split_tolerance,
+        min_class_holdout=settings.min_class_holdout_ratio,
+    )
+    runner = count_runner or _default_count_runner
+    history: list[dict[str, Any]] = []
+    converged = False
+
+    for round_index in range(1, settings.max_split_iterations + 1):
+        dmax, train_groups = _training_dmax(
+            profiles,
+            assignment,
+            settings.dmax_quantile,
+        )
+        counts = runner(sources, settings, selected_flows, dmax)
+        weights = {
+            result.source.capture_group: float(result.final_sample_count)
+            for result in counts
+        }
+        new_assignment = create_variable_weighted_group_assignment(
+            labels,
+            weights,
+            primary,
+            settings.val_ratio,
+            settings.test_ratio,
+            settings.seed + round_index,
+            trials=settings.split_search_trials,
+            overall_tolerance=settings.overall_split_tolerance,
+            min_class_holdout=settings.min_class_holdout_ratio,
+        )
+        quality = evaluate_weighted_assignment(
+            labels,
+            weights,
+            primary,
+            new_assignment,
+            settings.val_ratio,
+            settings.test_ratio,
+            settings.overall_split_tolerance,
+            settings.min_class_holdout_ratio,
+        )
+        history.append(
+            {
+                "iteration": round_index,
+                "dmax_seconds": dmax,
+                "dmax_train_groups": list(train_groups),
+                "changed_groups": sum(
+                    assignment[group] != new_assignment[group] for group in labels
+                ),
+                "quality_passed": quality.passed,
+                "violations": list(quality.violations),
+                **{
+                    f"{split}_ratio": quality.overall_ratios[split]
+                    for split in ("train", "val", "test")
+                },
+            }
+        )
+        if new_assignment == assignment:
+            converged = True
+            assignment = new_assignment
+            break
+        assignment = new_assignment
+
+    final_dmax, final_train_groups = _training_dmax(
+        profiles,
+        assignment,
+        settings.dmax_quantile,
+    )
+    final_counts = runner(sources, settings, selected_flows, final_dmax)
+    final_weights = {
+        result.source.capture_group: int(result.final_sample_count)
+        for result in final_counts
+    }
+    final_quality = evaluate_weighted_assignment(
+        labels,
+        final_weights,
+        primary,
+        assignment,
+        settings.val_ratio,
+        settings.test_ratio,
+        settings.overall_split_tolerance,
+        settings.min_class_holdout_ratio,
+    )
+    return SplitRefinementResult(
+        assignment=assignment,
+        dmax=final_dmax,
+        dmax_train_groups=final_train_groups,
+        group_sample_counts=final_weights,
+        history=tuple(history),
+        converged=converged,
+        quality=final_quality,
+    )
+
+
 def _write_split_balance_audit(
     output_root: Path,
     profiles: list[SourceProfile],
@@ -697,35 +929,43 @@ def run_segment_pipeline(settings: SegmentPipelineSettings) -> dict[str, Any]:
         settings.workers,
         "统计",
     )
-    group_labels = {profile.source.capture_group: profile.source.application for profile in profiles}
-    group_weights = {
-        profile.source.capture_group: float(max(1, profile.eligible_segments))
-        for profile in profiles
-    }
-    group_primary = {profile.source.capture_group: profile.source.primary for profile in profiles}
-    group_assignment = create_weighted_group_assignment(
-        group_labels,
-        group_weights,
-        group_primary,
-        settings.val_ratio,
-        settings.test_ratio,
-        settings.seed,
-        trials=settings.split_search_trials,
-        require_class_coverage=settings.run_mode.lower() == "full",
+    refinement = _refine_group_assignment(
+        sources,
+        profiles,
+        settings,
+        selected_flows,
     )
+    group_assignment = refinement.assignment
+    dmax = refinement.dmax
 
-    # 只有已划入训练集的采集组可以参与 D_max 拟合，避免验证/测试信息泄漏。
+    # Full模式比例不达标时只保留失败诊断，不进入昂贵的完整特征构建。
+    if settings.run_mode.lower() == "full" and not refinement.quality.passed:
+        _atomic_json(
+            output_root / "statistics" / "split_balance_summary.json",
+            {
+                "status": "failed",
+                "target_ratios": {
+                    "train": 1.0 - settings.val_ratio - settings.test_ratio,
+                    "val": settings.val_ratio,
+                    "test": settings.test_ratio,
+                },
+                "overall_ratios": refinement.quality.overall_ratios,
+                "application_ratios": refinement.quality.application_ratios,
+                "primary_ratios": refinement.quality.primary_ratios,
+                "violations": list(refinement.quality.violations),
+            },
+        )
+        raise ValueError(
+            "split quality gate failed: " + "; ".join(refinement.quality.violations[:5])
+        )
+
+    # 最终统计仍只使用最终训练采集组，供D_max审计文件记录。
     natural_durations = [
         duration
         for profile in profiles
         if group_assignment[profile.source.capture_group] == "train"
         for duration in profile.natural_durations
     ]
-    if not natural_durations:
-        raise ValueError("training split has no multi-packet natural bursts for D_max")
-    dmax = float(
-        np.quantile(np.asarray(natural_durations, dtype=np.float64), settings.dmax_quantile)
-    )
 
     build_tasks = [
         (

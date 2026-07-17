@@ -101,7 +101,7 @@ Expected: all split tests pass.
 - Produces: `SplitRefinementResult(assignment, dmax, dmax_train_groups, group_sample_counts, history, converged, quality)`.
 - Produces: `_refine_group_assignment(sources, profiles, settings, selected_flows) -> SplitRefinementResult`.
 
-- [ ] **Step 1: Write a failing count-equivalence test**
+- [x] **Step 1: Write a failing count-equivalence test**
 
 ```python
 def test_count_only_pass_matches_built_source_sample_count(tmp_path):
@@ -114,23 +114,23 @@ def test_count_only_pass_matches_built_source_sample_count(tmp_path):
     assert count.modeled_packets == batch.modeled_packets
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run: `python -m pytest tests/test_segment_feature_pipeline.py::test_count_only_pass_matches_built_source_sample_count -q`
 
 Expected: import failure for `SourceSampleCount` or `_count_source_samples_task`.
 
-- [ ] **Step 3: Implement the count-only worker by reusing Burst and capacity rules**
+- [x] **Step 3: Implement the count-only worker by reusing Burst and capacity rules**
 
 The worker iterates complete initial segments, skips segments below `min_model_packets`, calls `assign_bursts_with_reasons(..., max_duration=dmax)` and `pack_by_burst_capacity(...)`, and sums sample and modeled-packet counts without calling `build_flow_features`.
 
-- [ ] **Step 4: Run the focused test and verify GREEN**
+- [x] **Step 4: Run the focused test and verify GREEN**
 
 Run: `python -m pytest tests/test_segment_feature_pipeline.py::test_count_only_pass_matches_built_source_sample_count -q`
 
 Expected: pass.
 
-- [ ] **Step 5: Write failing refinement tests**
+- [x] **Step 5: Write failing refinement tests**
 
 Add a deterministic unit test for refinement state plus a full-mode synthetic fixture with at least ten source groups per application, then assert:
 
@@ -145,13 +145,13 @@ assert not success_marker.exists() when full quality fails
 
 Use the real synthetic CSV integration for the success-marker assertion; only the unit test may inject the count-pass callable to isolate iteration state.
 
-- [ ] **Step 6: Run the refinement tests and verify RED**
+- [x] **Step 6: Run the refinement tests and verify RED**
 
 Run: `python -m pytest tests/test_segment_feature_pipeline.py -q`
 
 Expected: failures because refinement and full quality gating are absent.
 
-- [ ] **Step 7: Implement at most three refinement rounds before feature construction**
+- [x] **Step 7: Implement at most three refinement rounds before feature construction**
 
 Round logic:
 
@@ -175,7 +175,7 @@ final_quality = evaluate_weighted_assignment(...final_counts..., assignment, ...
 
 Full mode writes diagnostics and raises before full feature arrays when `final_quality.passed` is false. Smoke skips ratio gates but retains coverage and leakage checks.
 
-- [ ] **Step 8: Run pipeline and parity tests and verify GREEN**
+- [x] **Step 8: Run pipeline and parity tests and verify GREEN**
 
 Run: `python -m pytest tests/test_segment_feature_pipeline.py -q`
 

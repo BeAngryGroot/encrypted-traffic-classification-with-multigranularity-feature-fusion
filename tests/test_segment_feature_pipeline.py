@@ -13,7 +13,14 @@ sys.path.insert(0, str(ROOT))
 
 from data.run_segment_feature_pipeline import (  # noqa: E402
     SegmentPipelineSettings,
+    SourceInfo,
+    SourceProfile,
+    SourceSampleCount,
+    _build_source_task,
+    _count_source_samples_task,
+    _discover_sources,
     _read_packet_frame,
+    _refine_group_assignment,
     _select_smoke_flow_ids,
     _source_info,
     run_segment_pipeline,
@@ -41,6 +48,91 @@ def test_pipeline_entry_can_be_loaded_from_data_directory():
     assert result.returncode == 0, result.stderr
 
 
+def test_count_only_pass_matches_built_source_sample_count(tmp_path):
+    csv_root = build_synthetic_iscxtor_csv_tree(tmp_path)
+    source = _discover_sources(csv_root)[0]
+    settings = make_settings(csv_root, tmp_path / "out")
+
+    count = _count_source_samples_task((source, settings, None, 0.2))
+    batch = _build_source_task((source, settings, None, 0.2, "train"))
+
+    assert count.final_sample_count == len(batch.sample_keys)
+    assert count.modeled_packets == batch.modeled_packets
+
+
+def test_refinement_uses_final_counts_and_final_train_only_dmax(tmp_path):
+    sources = []
+    profiles = []
+    expected_counts = {}
+    weights = [60, 20, 6, 5, 5, 5, 5, 4]
+    for application in ["A", "B"]:
+        for index, weight in enumerate(weights):
+            source = SourceInfo(
+                path=tmp_path / f"{application}-{index}.csv",
+                source_key=f"{application}-{index}",
+                capture_group=f"{application}-{index}",
+                primary="TOR" if index % 2 else "NONTOR",
+                application=application,
+            )
+            sources.append(source)
+            profiles.append(
+                SourceProfile(
+                    source=source,
+                    input_packets=10,
+                    initial_segments=1,
+                    eligible_segments=1,
+                    ineligible_packets=0,
+                    natural_durations=(0.01 * (index + 1),),
+                    selected_flow_count=1,
+                    elapsed_seconds=0.0,
+                )
+            )
+            expected_counts[source.capture_group] = weight
+
+    settings = SegmentPipelineSettings(
+        csv_dir=tmp_path,
+        output_dir=tmp_path / "out",
+        run_mode="full",
+        val_ratio=0.10,
+        test_ratio=0.10,
+        split_search_trials=4000,
+        max_split_iterations=3,
+        workers=1,
+    )
+
+    def count_runner(current_sources, _settings, _selected_flows, _dmax):
+        return [
+            SourceSampleCount(
+                source=source,
+                final_sample_count=expected_counts[source.capture_group],
+                modeled_packets=expected_counts[source.capture_group],
+                elapsed_seconds=0.0,
+            )
+            for source in current_sources
+        ]
+
+    result = _refine_group_assignment(
+        sources,
+        profiles,
+        settings,
+        {source.source_key: None for source in sources},
+        count_runner=count_runner,
+    )
+
+    assert result.group_sample_counts == expected_counts
+    assert len(result.history) <= 3
+    assert set(result.dmax_train_groups) == {
+        group for group, split in result.assignment.items() if split == "train"
+    }
+    expected_durations = [
+        duration
+        for profile in profiles
+        if result.assignment[profile.source.capture_group] == "train"
+        for duration in profile.natural_durations
+    ]
+    assert result.dmax == pytest.approx(np.quantile(expected_durations, 0.95))
+
+
 def build_synthetic_iscxtor_csv_tree(tmp_path: Path) -> Path:
     root = tmp_path / "csv"
     for application in ["BROWSING", "EMAIL"]:
@@ -65,6 +157,38 @@ def build_synthetic_iscxtor_csv_tree(tmp_path: Path) -> Path:
                         "protocol": 6,
                         "ip_ttl": 64,
                         "tcp_flags": 16,
+                    }
+                )
+            pd.DataFrame(rows).to_csv(path, index=False)
+    return root
+
+
+def build_unbalanceable_full_csv_tree(tmp_path: Path) -> Path:
+    """每类一个大组、两个小组，保持PCAP完整时无法通过80/10/10门槛。"""
+
+    root = tmp_path / "full_csv"
+    applications = ["AUDIO", "BROWSING", "CHAT", "EMAIL", "FILE", "P2P", "VIDEO", "VOIP"]
+    for application in applications:
+        for group_index, packet_count in enumerate([80, 2, 2]):
+            transport = "NonTor" if group_index == 1 else "Tor"
+            path = root / transport / application / f"capture_{group_index}_packets.csv"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            rows = []
+            for frame in range(packet_count):
+                # 每两个包改变一次方向，既产生可计算时长的Burst，又触发容量拆分。
+                forward = (frame // 2) % 2 == 0
+                rows.append(
+                    {
+                        "flow_id": f"{application}-{group_index}",
+                        "frame_index": frame,
+                        "timestamp": frame * 0.01,
+                        "packet_length": 100 + frame,
+                        "payload_length": 60,
+                        "src_ip": "10.0.0.1" if forward else "10.0.0.2",
+                        "dst_ip": "10.0.0.2" if forward else "10.0.0.1",
+                        "src_port": 1234 if forward else 443,
+                        "dst_port": 443 if forward else 1234,
+                        "protocol": 6,
                     }
                 )
             pd.DataFrame(rows).to_csv(path, index=False)
@@ -140,6 +264,28 @@ def test_segment_pipeline_rejects_missing_timestamp(tmp_path):
 
     with pytest.raises(ValueError, match="timestamp"):
         run_segment_pipeline(make_settings(csv_root, tmp_path / "broken"))
+
+
+def test_full_pipeline_rejects_unreachable_split_quality_without_success_marker(tmp_path):
+    csv_root = build_unbalanceable_full_csv_tree(tmp_path)
+    output = tmp_path / "quality_failure"
+    settings = SegmentPipelineSettings(
+        csv_dir=csv_root,
+        output_dir=output,
+        run_mode="full",
+        val_ratio=0.10,
+        test_ratio=0.10,
+        max_packets=4,
+        max_bursts=3,
+        workers=1,
+        split_search_trials=500,
+        max_split_iterations=1,
+    )
+
+    with pytest.raises(ValueError, match="split quality"):
+        run_segment_pipeline(settings)
+
+    assert not (output / ".pipeline_success.json").exists()
 
 
 def test_smoke_selects_smallest_complete_flows(tmp_path):
