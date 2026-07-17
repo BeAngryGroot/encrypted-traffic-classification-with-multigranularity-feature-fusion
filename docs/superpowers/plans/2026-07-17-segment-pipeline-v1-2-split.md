@@ -197,7 +197,7 @@ Expected: all pipeline tests pass, including workers=1/2 parity.
 - Consumes: Task 2 refinement result and final batch manifests.
 - Produces: `split_iteration_history.csv`, `group_weight_audit.csv`, expanded `split_balance.csv`, and expanded `split_balance_summary.json`.
 
-- [ ] **Step 1: Add failing assertions for v1.2 paths and audit files**
+- [x] **Step 1: Add failing assertions for v1.2 paths and audit files**
 
 ```python
 assert config.feature_id == "segment15_burstp95_v1_2"
@@ -207,19 +207,19 @@ summary = json.loads((output / "statistics/split_balance_summary.json").read_tex
 assert summary["target_ratios"] == {"train": 0.8, "val": 0.1, "test": 0.1}
 ```
 
-- [ ] **Step 2: Run config and pipeline tests and verify RED**
+- [x] **Step 2: Run config and pipeline tests and verify RED**
 
 Run: `python -m pytest tests/test_shipped_configs.py tests/test_segment_feature_pipeline.py -q`
 
 Expected: v1.1 ids and missing audit files fail.
 
-- [ ] **Step 3: Write v1.2 artifacts atomically and update configuration/docs**
+- [x] **Step 3: Write v1.2 artifacts atomically and update configuration/docs**
 
 Set `VAL_RATIO=0.10`, `TEST_RATIO=0.10`, `MAX_SPLIT_ITERATIONS=3`, `OVERALL_SPLIT_TOLERANCE=0.03`, `MIN_CLASS_HOLDOUT_RATIO=0.05`, output directory `segment15_burstp95_v1_2`, experiment id suffix `_v1_2`, and split id `iterative_weighted_capture_group_80_10_10_seed42_v1_2`.
 
 Document that full processing reuses CSV, smoke does not enforce 80/10/10, and failed quality gates leave diagnostics without a success marker.
 
-- [ ] **Step 4: Run config and pipeline tests and verify GREEN**
+- [x] **Step 4: Run config and pipeline tests and verify GREEN**
 
 Run: `python -m pytest tests/test_shipped_configs.py tests/test_segment_feature_pipeline.py -q`
 

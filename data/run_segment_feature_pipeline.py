@@ -50,7 +50,7 @@ from data.splits import (
 # 用户配置区：服务器运行时只需要确认这四项
 # =============================================================================
 CSV_DIR = Path("/data3/wsb_workspace/study/data/Dual_data/csv/full_session60_v1")
-OUTPUT_DIR = Path("/data3/wsb_workspace/study/data/Dual_data/processed/segment15_burstp95_v1_1")
+OUTPUT_DIR = Path("/data3/wsb_workspace/study/data/Dual_data/processed/segment15_burstp95_v1_2")
 RUN_MODE = "smoke"  # 第一次保持 smoke；检查成功后改成 full
 WORKERS = 2  # 服务器首版建议 2；排错时改为 1，不建议直接超过 4
 
@@ -58,8 +58,8 @@ WORKERS = 2  # 服务器首版建议 2；排错时改为 1，不建议直接超�
 # 论文首版固定参数：后续敏感性实验通过新数据版本修改，不覆盖本版本
 # =============================================================================
 WINDOW_SECONDS = 15.0
-VAL_RATIO = 0.15
-TEST_RATIO = 0.15
+VAL_RATIO = 0.10
+TEST_RATIO = 0.10
 SEED = 42
 ALPHA = 1.0
 D_MAX_QUANTILE = 0.95
@@ -844,7 +844,8 @@ def _write_split_balance_audit(
     sample_frame: pd.DataFrame,
     assignment: dict[str, str],
     settings: SegmentPipelineSettings,
-) -> None:
+    refinement: SplitRefinementResult,
+) -> SplitQualityReport:
     """同时保存划分前估计权重和生成后的真实样本数，便于论文审计。"""
 
     targets = {
@@ -872,34 +873,121 @@ def _write_split_balance_audit(
     rows: list[dict[str, Any]] = []
     summary: dict[str, Any] = {"target_ratios": targets, "bases": {}}
     for basis, basis_frame in combined.groupby("basis", sort=True):
-        total = float(basis_frame["count"].sum())
-        basis_summary = {}
-        for split_name in ("train", "val", "test"):
-            count = int(basis_frame.loc[basis_frame["split"] == split_name, "count"].sum())
-            ratio = count / total if total else 0.0
-            deviation = ratio - targets[split_name]
-            rows.append(
-                {
-                    "basis": basis,
-                    "split": split_name,
-                    "count": count,
-                    "ratio": ratio,
-                    "target_ratio": targets[split_name],
-                    "deviation": deviation,
-                }
-            )
-            basis_summary[split_name] = {
-                "count": count,
-                "ratio": ratio,
-                "deviation": deviation,
-            }
+        basis_summary: dict[str, Any] = {}
+        for level, column in (("overall", None), ("application", "application"), ("primary", "primary")):
+            labels = ["ALL"] if column is None else sorted(basis_frame[column].dropna().unique())
+            level_summary: dict[str, Any] = {}
+            for label in labels:
+                selected = basis_frame if column is None else basis_frame[basis_frame[column] == label]
+                total = float(selected["count"].sum())
+                split_summary = {}
+                for split_name in ("train", "val", "test"):
+                    count = int(selected.loc[selected["split"] == split_name, "count"].sum())
+                    ratio = count / total if total else 0.0
+                    deviation = ratio - targets[split_name]
+                    rows.append(
+                        {
+                            "basis": basis,
+                            "level": level,
+                            "label": label,
+                            "split": split_name,
+                            "count": count,
+                            "ratio": ratio,
+                            "target_ratio": targets[split_name],
+                            "deviation": deviation,
+                        }
+                    )
+                    split_summary[split_name] = {
+                        "count": count,
+                        "ratio": ratio,
+                        "deviation": deviation,
+                    }
+                level_summary[str(label)] = split_summary
+            basis_summary[level] = level_summary
         summary["bases"][basis] = basis_summary
+
+    actual_counts = (
+        sample_frame.groupby("capture_group").size().astype(int).to_dict()
+    )
+    actual_quality = evaluate_weighted_assignment(
+        {profile.source.capture_group: profile.source.application for profile in profiles},
+        {group: int(actual_counts.get(group, 0)) for group in assignment},
+        {profile.source.capture_group: profile.source.primary for profile in profiles},
+        assignment,
+        settings.val_ratio,
+        settings.test_ratio,
+        settings.overall_split_tolerance,
+        settings.min_class_holdout_ratio,
+    )
+    summary["tolerances"] = {
+        "overall": settings.overall_split_tolerance,
+        "minimum_application_holdout": settings.min_class_holdout_ratio,
+    }
+    summary["quality"] = {
+        "status": (
+            "passed"
+            if settings.run_mode.lower() == "full" and actual_quality.passed
+            else "failed"
+            if settings.run_mode.lower() == "full"
+            else "smoke_not_enforced"
+        ),
+        "violations": list(actual_quality.violations),
+        "converged": refinement.converged,
+        "iterations": len(refinement.history),
+    }
     _atomic_csv(output_root / "manifests" / "split_balance.csv", pd.DataFrame(rows))
     _atomic_json(output_root / "statistics" / "split_balance_summary.json", summary)
+    return actual_quality
+
+
+def _write_refinement_audit(
+    output_root: Path,
+    profiles: list[SourceProfile],
+    refinement: SplitRefinementResult,
+    sample_frame: pd.DataFrame | None = None,
+) -> None:
+    """保存每轮变化和每个采集组的真实权重，失败时同样可审计。"""
+
+    history_rows = []
+    for row in refinement.history:
+        normalized = dict(row)
+        normalized["dmax_train_groups"] = json.dumps(
+            normalized.get("dmax_train_groups", []), ensure_ascii=False
+        )
+        normalized["violations"] = json.dumps(
+            normalized.get("violations", []), ensure_ascii=False
+        )
+        history_rows.append(normalized)
+    _atomic_csv(
+        output_root / "manifests" / "split_iteration_history.csv",
+        pd.DataFrame(history_rows),
+    )
+
+    actual_counts = (
+        sample_frame.groupby("capture_group").size().astype(int).to_dict()
+        if sample_frame is not None and not sample_frame.empty
+        else {}
+    )
+    rows = [
+        {
+            "capture_group": profile.source.capture_group,
+            "source_key": profile.source.source_key,
+            "application": profile.source.application,
+            "primary": profile.source.primary,
+            "split": refinement.assignment[profile.source.capture_group],
+            "eligible_initial_segments": profile.eligible_segments,
+            "predicted_final_samples": refinement.group_sample_counts.get(
+                profile.source.capture_group, 0
+            ),
+            "actual_final_samples": actual_counts.get(profile.source.capture_group, ""),
+        }
+        for profile in profiles
+    ]
+    _atomic_csv(output_root / "manifests" / "group_weight_audit.csv", pd.DataFrame(rows))
 
 
 def run_segment_pipeline(settings: SegmentPipelineSettings) -> dict[str, Any]:
-    """两遍处理：先估计带权划分和训练 D_max，再并行生成冻结特征。"""
+    """迭代拟合最终样本划分与训练D_max，再并行生成冻结特征。"""
 
     _validate_settings(settings)
     csv_root = Path(settings.csv_dir)
@@ -937,6 +1025,7 @@ def run_segment_pipeline(settings: SegmentPipelineSettings) -> dict[str, Any]:
     )
     group_assignment = refinement.assignment
     dmax = refinement.dmax
+    _write_refinement_audit(output_root, profiles, refinement)
 
     # Full模式比例不达标时只保留失败诊断，不进入昂贵的完整特征构建。
     if settings.run_mode.lower() == "full" and not refinement.quality.passed:
@@ -1065,13 +1154,20 @@ def run_segment_pipeline(settings: SegmentPipelineSettings) -> dict[str, Any]:
     )
     _atomic_csv(manifests_dir / "class_summary.csv", class_summary)
 
-    _write_split_balance_audit(
+    _write_refinement_audit(output_root, profiles, refinement, sample_frame)
+    actual_quality = _write_split_balance_audit(
         output_root,
         profiles,
         sample_frame,
         group_assignment,
         settings,
+        refinement,
     )
+    if settings.run_mode.lower() == "full" and not actual_quality.passed:
+        raise ValueError(
+            "split quality gate failed after feature construction: "
+            + "; ".join(actual_quality.violations[:5])
+        )
 
     statistics_dir = output_root / "statistics"
     _atomic_json(
@@ -1099,7 +1195,7 @@ def run_segment_pipeline(settings: SegmentPipelineSettings) -> dict[str, Any]:
 
     summary = {
         "run_mode": settings.run_mode.lower(),
-        "data_version": "segment15_burstp95_v1_1",
+        "data_version": "segment15_burstp95_v1_2",
         "source_files": len(sources),
         "selected_parent_flows": int(sum(profile.selected_flow_count for profile in profiles)),
         "initial_segments": len(segment_rows),
@@ -1126,6 +1222,14 @@ def run_segment_pipeline(settings: SegmentPipelineSettings) -> dict[str, Any]:
             "workers": int(settings.workers),
             "smoke_flows_per_file": int(settings.smoke_flows_per_file),
             "split_search_trials": int(settings.split_search_trials),
+            "max_split_iterations": int(settings.max_split_iterations),
+            "overall_split_tolerance": float(settings.overall_split_tolerance),
+            "min_class_holdout_ratio": float(settings.min_class_holdout_ratio),
+        },
+        "split_refinement": {
+            "iterations": len(refinement.history),
+            "converged": refinement.converged,
+            "quality_passed": actual_quality.passed,
         },
     }
     _atomic_json(statistics_dir / "segmentation_summary.json", summary)

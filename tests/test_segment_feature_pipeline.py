@@ -230,6 +230,8 @@ def test_segment_pipeline_writes_compatible_features_without_packet_loss(tmp_pat
     assert (output / "manifests/segment_manifest.csv").exists()
     assert (output / "manifests/sample_manifest.csv").exists()
     assert (output / "manifests/split_balance.csv").exists()
+    assert (output / "manifests/split_iteration_history.csv").exists()
+    assert (output / "manifests/group_weight_audit.csv").exists()
     assert (output / "statistics/split_balance_summary.json").exists()
     assert (output / ".pipeline_success.json").exists()
 
@@ -237,6 +239,11 @@ def test_segment_pipeline_writes_compatible_features_without_packet_loss(tmp_pat
     assert dmax["source_split"] == "train"
     assert dmax["quantile"] == 0.95
     assert dmax["natural_burst_count"] > 0
+    balance = json.loads(
+        (output / "statistics/split_balance_summary.json").read_text(encoding="utf-8")
+    )
+    assert balance["target_ratios"] == {"train": 0.8, "val": 0.1, "test": 0.1}
+    assert balance["quality"]["status"] in {"passed", "smoke_not_enforced"}
 
 
 def test_segment_pipeline_is_deterministic_on_rerun(tmp_path):

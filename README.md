@@ -34,12 +34,12 @@ pcap/pcapng
 python -m data.run_segment_feature_pipeline
 ```
 
-脚本也兼容 `python data/run_segment_feature_pipeline.py` 以及在 `data` 目录直接运行。smoke 对每个应用最多选择 3 个较小源文件、每个源文件选择包数最少的 5 条完整父流，不截断流内数据。脚本会输出逐源进度、输入包数、建模包数、单包审计数、训练集 `D_max`、特征形状和三个集合样本数。确认成功后把 `RUN_MODE` 改为 `"full"`，再次运行同一个文件。新结果写入 `segment15_burstp95_v1_1`，不会覆盖旧 `v1`。
+脚本也兼容 `python data/run_segment_feature_pipeline.py` 以及在 `data` 目录直接运行。smoke 对每个应用最多选择 3 个较小源文件、每个源文件选择包数最少的 5 条完整父流，不截断流内数据。full 使用最终模型样本数迭代优化 `80%/10%/10%`，同一PCAP始终不可拆分，`D_max`只由当前训练组计算。确认成功后把 `RUN_MODE` 改为 `"full"`。新结果写入 `segment15_burstp95_v1_2`，不会覆盖旧 `v1` 和 `v1.1`。
 
 生成 smoke 特征后运行三轮小模型测试：
 
 ```text
-python experiments/run_experiment.py --config experiments/configs/smoke/application8_segment15_burstp95_smoke_v1_1.yaml
+python experiments/run_experiment.py --config experiments/configs/smoke/application8_segment15_burstp95_smoke_v1_2.yaml
 ```
 
 ## 三阶段运行
@@ -53,13 +53,13 @@ python experiments/run_experiment.py --config experiments/configs/smoke/applicat
 旧版前缀特征的 smoke 配置仍保留用于对照。快速检查新版配置但不启动训练：
 
 ```powershell
-python experiments/run_experiment.py --config experiments/configs/smoke/application8_segment15_burstp95_smoke_v1_1.yaml --dry-run
+python experiments/run_experiment.py --config experiments/configs/smoke/application8_segment15_burstp95_smoke_v1_2.yaml --dry-run
 ```
 
 运行 smoke：
 
 ```powershell
-python experiments/run_experiment.py --config experiments/configs/smoke/application8_segment15_burstp95_smoke_v1_1.yaml
+python experiments/run_experiment.py --config experiments/configs/smoke/application8_segment15_burstp95_smoke_v1_2.yaml
 ```
 
 每次实验写入 `artifacts/runs/<experiment_id>/seed_<seed>/`，已有目录默认拒绝覆盖。生成数据、特征、权重和运行结果均由 Git 忽略，配置与代码进入版本控制。
