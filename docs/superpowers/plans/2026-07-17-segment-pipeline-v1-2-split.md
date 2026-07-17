@@ -32,7 +32,7 @@
 - Produces: `evaluate_weighted_assignment(group_labels, group_weights, group_primary, assignment, val_ratio, test_ratio, overall_tolerance, min_class_holdout) -> SplitQualityReport`.
 - Produces: `create_variable_weighted_group_assignment(group_labels, group_weights, group_primary, val_ratio, test_ratio, seed, trials) -> dict[str, str]`.
 
-- [ ] **Step 1: Write failing tests for variable group counts and deterministic quality evaluation**
+- [x] **Step 1: Write failing tests for variable group counts and deterministic quality evaluation**
 
 ```python
 def test_variable_optimizer_can_use_two_validation_groups_when_one_large_group_is_bad():
@@ -58,13 +58,13 @@ def test_quality_report_rejects_file_like_holdout_collapse():
     assert any("FILE" in violation for violation in report.violations)
 ```
 
-- [ ] **Step 2: Run the split tests and verify RED**
+- [x] **Step 2: Run the split tests and verify RED**
 
 Run: `python -m pytest tests/test_splits.py -q`
 
 Expected: import failure for the two new interfaces.
 
-- [ ] **Step 3: Implement report calculation and deterministic variable-count search**
+- [x] **Step 3: Implement report calculation and deterministic variable-count search**
 
 Implementation requirements:
 
@@ -80,7 +80,7 @@ class SplitQualityReport:
 
 Candidate generation gives every application one train/val/test group, distributes remaining groups with a seeded multinomial centered on 80/10/10, permutes group identity, rejects missing global Tor/Non-Tor coverage, then selects the lexicographically best `(hard_violation_amount, weighted_ratio_error, deterministic_assignment)` candidate. Do not force a fixed number of groups per split.
 
-- [ ] **Step 4: Run `tests/test_splits.py` and verify GREEN**
+- [x] **Step 4: Run `tests/test_splits.py` and verify GREEN**
 
 Run: `python -m pytest tests/test_splits.py -q`
 

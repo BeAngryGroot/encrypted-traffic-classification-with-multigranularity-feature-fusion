@@ -8,13 +8,87 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from data.splits import (  # noqa: E402
+    create_variable_weighted_group_assignment,
     create_group_split,
     create_stratified_group_assignment,
     create_weighted_group_assignment,
+    evaluate_weighted_assignment,
     indices_from_group_assignment,
     load_group_split,
     save_group_split,
 )
+
+
+def test_variable_optimizer_can_use_multiple_holdout_groups_for_weight_balance():
+    labels = {
+        f"{label}-{index}": label
+        for label in ["A", "B"]
+        for index in range(8)
+    }
+    per_class_weights = [60, 20, 6, 5, 5, 5, 5, 4]
+    weights = {
+        group: float(per_class_weights[int(group.rsplit("-", 1)[1])])
+        for group in labels
+    }
+    primary = {
+        group: ("TOR" if index % 2 else "NONTOR")
+        for index, group in enumerate(labels)
+    }
+
+    first = create_variable_weighted_group_assignment(
+        labels,
+        weights,
+        primary,
+        val_ratio=0.10,
+        test_ratio=0.10,
+        seed=42,
+        trials=4000,
+    )
+    second = create_variable_weighted_group_assignment(
+        labels,
+        weights,
+        primary,
+        val_ratio=0.10,
+        test_ratio=0.10,
+        seed=42,
+        trials=4000,
+    )
+    report = evaluate_weighted_assignment(
+        labels,
+        weights,
+        primary,
+        first,
+        val_ratio=0.10,
+        test_ratio=0.10,
+        overall_tolerance=0.03,
+        min_class_holdout=0.05,
+    )
+
+    assert first == second
+    assert report.passed
+    for label in ["A", "B"]:
+        assert sum(
+            first[group] == "val" for group, value in labels.items() if value == label
+        ) >= 2
+        assert sum(
+            first[group] == "test" for group, value in labels.items() if value == label
+        ) >= 2
+
+
+def test_quality_report_rejects_file_like_holdout_collapse():
+    report = evaluate_weighted_assignment(
+        {"big": "FILE", "small-v": "FILE", "small-t": "FILE"},
+        {"big": 970.0, "small-v": 10.0, "small-t": 20.0},
+        {"big": "TOR", "small-v": "NONTOR", "small-t": "NONTOR"},
+        {"big": "train", "small-v": "val", "small-t": "test"},
+        val_ratio=0.10,
+        test_ratio=0.10,
+        overall_tolerance=0.03,
+        min_class_holdout=0.05,
+    )
+
+    assert not report.passed
+    assert any("FILE" in violation for violation in report.violations)
 
 
 def test_weighted_group_assignment_is_deterministic_and_balances_samples():

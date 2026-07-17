@@ -24,6 +24,211 @@ class GroupSplit:
         )
 
 
+@dataclass(frozen=True)
+class SplitQualityReport:
+    """采集组划分的比例与覆盖审计结果。"""
+
+    passed: bool
+    violations: tuple[str, ...]
+    overall_ratios: dict[str, float]
+    application_ratios: dict[str, dict[str, float]]
+    primary_ratios: dict[str, dict[str, float]]
+
+
+def evaluate_weighted_assignment(
+    group_labels: Mapping[str, str],
+    group_weights: Mapping[str, float],
+    group_primary: Mapping[str, str],
+    assignment: Mapping[str, str],
+    val_ratio: float = 0.10,
+    test_ratio: float = 0.10,
+    overall_tolerance: float = 0.03,
+    min_class_holdout: float = 0.05,
+) -> SplitQualityReport:
+    """按最终样本权重检查总体、应用和Tor状态覆盖。"""
+
+    if val_ratio < 0 or test_ratio < 0 or val_ratio + test_ratio >= 1:
+        raise ValueError("val_ratio and test_ratio must be non-negative and sum to less than 1")
+    if overall_tolerance < 0 or not 0 <= min_class_holdout < 1:
+        raise ValueError("quality tolerances are invalid")
+    labels = {str(group): str(label) for group, label in group_labels.items()}
+    weights = {str(group): float(weight) for group, weight in group_weights.items()}
+    primary = {str(group): str(value) for group, value in group_primary.items()}
+    normalized = {str(group): str(value) for group, value in assignment.items()}
+    expected = set(labels)
+    if not expected or set(weights) != expected or set(primary) != expected or set(normalized) != expected:
+        raise ValueError("labels, weights, primary labels and assignment must contain identical groups")
+    if any(not np.isfinite(weight) or weight < 0 for weight in weights.values()):
+        raise ValueError("group weights must be finite and non-negative")
+    if sum(weights.values()) <= 0:
+        raise ValueError("at least one group weight must be positive")
+    unknown = sorted(set(normalized.values()) - {"train", "val", "test"})
+    if unknown:
+        raise ValueError(f"unknown split names: {', '.join(unknown)}")
+
+    targets = {
+        "train": 1.0 - float(val_ratio) - float(test_ratio),
+        "val": float(val_ratio),
+        "test": float(test_ratio),
+    }
+    active_splits = tuple(split for split, ratio in targets.items() if ratio > 0)
+
+    def ratios(groups: list[str]) -> dict[str, float]:
+        total = sum(weights[group] for group in groups)
+        return {
+            split: (
+                sum(weights[group] for group in groups if normalized[group] == split) / total
+                if total > 0
+                else 0.0
+            )
+            for split in ("train", "val", "test")
+        }
+
+    all_groups = sorted(expected)
+    overall = ratios(all_groups)
+    applications = {
+        label: ratios(sorted(group for group, value in labels.items() if value == label))
+        for label in sorted(set(labels.values()))
+    }
+    primary_ratios = {
+        label: ratios(sorted(group for group, value in primary.items() if value == label))
+        for label in sorted(set(primary.values()))
+    }
+
+    violations: list[str] = []
+    for split in active_splits:
+        deviation = abs(overall[split] - targets[split])
+        if deviation > overall_tolerance:
+            violations.append(
+                f"overall {split} ratio {overall[split]:.6f} exceeds tolerance "
+                f"around {targets[split]:.6f}"
+            )
+    for application, values in applications.items():
+        if values["train"] <= 0:
+            violations.append(f"application {application} is missing from train")
+        for split in ("val", "test"):
+            if targets[split] > 0 and values[split] < min_class_holdout:
+                violations.append(
+                    f"application {application} {split} ratio {values[split]:.6f} "
+                    f"is below {min_class_holdout:.6f}"
+                )
+    for label, values in primary_ratios.items():
+        for split in active_splits:
+            if values[split] <= 0:
+                violations.append(f"primary {label} is missing from {split}")
+
+    return SplitQualityReport(
+        passed=not violations,
+        violations=tuple(violations),
+        overall_ratios=overall,
+        application_ratios=applications,
+        primary_ratios=primary_ratios,
+    )
+
+
+def create_variable_weighted_group_assignment(
+    group_labels: Mapping[str, str],
+    group_weights: Mapping[str, float],
+    group_primary: Mapping[str, str],
+    val_ratio: float = 0.10,
+    test_ratio: float = 0.10,
+    seed: int = 42,
+    *,
+    trials: int = 10000,
+    overall_tolerance: float = 0.03,
+    min_class_holdout: float = 0.05,
+) -> dict[str, str]:
+    """搜索可变采集组数量的确定性带权80/10/10划分。"""
+
+    if int(trials) < 1:
+        raise ValueError("trials must be at least 1")
+    labels = {str(group): str(label) for group, label in group_labels.items()}
+    weights = {str(group): float(weight) for group, weight in group_weights.items()}
+    primary = {str(group): str(value) for group, value in group_primary.items()}
+    if not labels or set(weights) != set(labels) or set(primary) != set(labels):
+        raise ValueError("group labels, weights and primary labels must contain identical groups")
+    by_label: dict[str, list[str]] = {}
+    for group, label in labels.items():
+        by_label.setdefault(label, []).append(group)
+    for label, groups in by_label.items():
+        if len(groups) < 3:
+            raise ValueError(f"class {label} needs at least 3 capture groups")
+
+    targets = np.asarray(
+        [1.0 - float(val_ratio) - float(test_ratio), float(val_ratio), float(test_ratio)],
+        dtype=np.float64,
+    )
+    if np.any(targets < 0) or targets.sum() <= 0:
+        raise ValueError("invalid split ratios")
+    targets = targets / targets.sum()
+    split_names = ("train", "val", "test")
+
+    def ratio_error(report: SplitQualityReport) -> float:
+        target_map = dict(zip(split_names, targets.tolist()))
+
+        def one(values: Mapping[str, float]) -> float:
+            return sum((values[split] - target_map[split]) ** 2 for split in split_names)
+
+        return (
+            2.0 * one(report.overall_ratios)
+            + float(np.mean([one(values) for values in report.application_ratios.values()]))
+            + 0.5 * float(np.mean([one(values) for values in report.primary_ratios.values()]))
+        )
+
+    def violation_amount(report: SplitQualityReport) -> float:
+        target_map = dict(zip(split_names, targets.tolist()))
+        amount = sum(
+            max(0.0, abs(report.overall_ratios[split] - target_map[split]) - overall_tolerance)
+            for split in split_names
+            if target_map[split] > 0
+        )
+        for values in report.application_ratios.values():
+            amount += max(0.0, min_class_holdout - values["val"])
+            amount += max(0.0, min_class_holdout - values["test"])
+            if values["train"] <= 0:
+                amount += 1.0
+        for values in report.primary_ratios.values():
+            amount += sum(1.0 for split in split_names if target_map[split] > 0 and values[split] <= 0)
+        return amount
+
+    rng = np.random.default_rng(int(seed))
+    best: dict[str, str] | None = None
+    best_key: tuple[float, float, tuple[tuple[str, str], ...]] | None = None
+    for _ in range(int(trials)):
+        candidate: dict[str, str] = {}
+        for label in sorted(by_label):
+            groups = sorted(set(by_label[label]))
+            shuffled = [groups[index] for index in rng.permutation(len(groups))]
+            counts = np.ones(3, dtype=np.int64)
+            if len(groups) > 3:
+                counts += rng.multinomial(len(groups) - 3, targets)
+            offset = 0
+            for split, count in zip(split_names, counts.tolist()):
+                for group in shuffled[offset:offset + count]:
+                    candidate[group] = split
+                offset += count
+
+        report = evaluate_weighted_assignment(
+            labels,
+            weights,
+            primary,
+            candidate,
+            val_ratio=val_ratio,
+            test_ratio=test_ratio,
+            overall_tolerance=overall_tolerance,
+            min_class_holdout=min_class_holdout,
+        )
+        deterministic = tuple(sorted(candidate.items()))
+        key = (violation_amount(report), ratio_error(report), deterministic)
+        if best_key is None or key < best_key:
+            best = candidate.copy()
+            best_key = key
+
+    if best is None:  # pragma: no cover - trials已校验，保留防御分支
+        raise RuntimeError("failed to generate a variable weighted assignment")
+    return best
+
+
 def create_stratified_group_assignment(
     group_labels: Mapping[str, str],
     val_ratio: float = 0.15,
